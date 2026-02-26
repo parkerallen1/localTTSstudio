@@ -561,7 +561,7 @@ async def do_update(download_url: str = Form(...)):
         script_path = os.path.join(temp_dir, "update.sh")
         with open(script_path, "w") as f:
             f.write(f'''#!/bin/bash
-sleep 2
+sleep 4
 rm -rf "{app_path}"
 mv "{extracted_app_path}" "{app_path}"
 open "{app_path}"
@@ -574,7 +574,7 @@ rm -rf "{temp_dir}"
         
         # Kill the current process right away to let script do the replacement
         async def _kill_soon():
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(2.0)
             os._exit(0)
         asyncio.create_task(_kill_soon())
         

@@ -86,11 +86,18 @@ document.addEventListener('DOMContentLoaded', () => {
                 body: formData
             });
             const data = await res.json();
-            console.log(data);
+            console.log("Update response:", data);
         } catch (e) {
-            console.error("Update failed:", e);
-            btnDoUpdate.textContent = "Update failed";
+            console.warn("Update fetch threw an error (likely server disconnected). Proceeding with reload assumption.", e);
         }
+
+        // The python server shuts itself down to replace the files, so we ping until it's back up, then reload
+        setInterval(async () => {
+            try {
+                await fetch('/', { mode: 'no-cors' });
+                window.location.reload();
+            } catch (err) { }
+        }, 2000);
     });
 
     // Run update check in background immediately on load
