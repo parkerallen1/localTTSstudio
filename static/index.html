@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Local TTS Studio</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+
+<body>
+    <div class="background-effects">
+        <div class="glow glow-1"></div>
+        <div class="glow glow-2"></div>
+    </div>
+
+    <div class="container">
+        <header>
+            <div class="header-top">
+                <h1>Local TTS Studio
+                    <span class="info-tooltip" id="info-btn" title="">
+                        <span class="info-icon">&#9432;</span>
+                        <span class="info-popover">
+                            <strong>Hardware Requirements</strong><br>
+                            Best on <strong>Apple M-series</strong> (M1/M2/M3/M4) using Metal GPU acceleration.<br><br>
+                            <strong>Intel Macs</strong> are supported but run on CPU only &mdash; expect
+                            5&ndash;10&times; slower generation.<br><br>
+                            <strong>Windows/Linux</strong> with an NVIDIA GPU also works great via CUDA.
+                        </span>
+                    </span>
+                </h1>
+            </div>
+            <p class="subtitle">Local text-to-speech, runs entirely on your machine.</p>
+            <span class="global-status-badge idle" id="global-status-badge">Model Status: Idle</span>
+        </header>
+
+        <div id="update-banner" class="update-banner hidden">
+            <span>A new version (<span id="update-version"></span>) is available!</span>
+            <button id="btn-do-update" class="primary-btn small-btn">Update Now</button>
+        </div>
+
+        <main>
+            <section class="settings-panel glass">
+                <h2>Settings</h2>
+                <div class="settings-grid">
+                    <div class="setting-item">
+                        <label for="model-type-select">Mode</label>
+                        <select id="model-type-select">
+                            <option value="Base" selected>Voice Cloning</option>
+                            <option value="CustomVoice">Preprogrammed Voice</option>
+                            <option value="VoiceDesign">Voice Design</option>
+                        </select>
+                    </div>
+
+                    <!-- CustomVoice: Speaker Select -->
+                    <div id="config-custom-voice" class="setting-item hidden">
+                        <label for="speaker-select">Speaker</label>
+                        <select id="speaker-select">
+                            <option value="vivian">Vivian</option>
+                            <option value="aiden">Aiden</option>
+                            <option value="dylan">Dylan</option>
+                            <option value="eric">Eric</option>
+                            <option value="ono_anna">Ono Anna</option>
+                            <option value="ryan">Ryan</option>
+                            <option value="serena">Serena</option>
+                            <option value="sohee">Sohee</option>
+                            <option value="uncle_fu">Uncle Fu</option>
+                        </select>
+                    </div>
+
+                    <!-- VoiceDesign: Prompt Input -->
+                    <div id="config-voice-design" class="setting-item hidden">
+                        <label for="voice-design-prompt">Voice Description</label>
+                        <input type="text" id="voice-design-prompt"
+                            placeholder="e.g., Speak in an incredulous tone, but with a hint of panic.">
+                    </div>
+
+                    <!-- Base (Cloning): File Upload and Ref Text -->
+                    <div id="config-base" class="setting-item hidden">
+                        <label for="saved-voice-select">Saved Profile</label>
+                        <div style="display: flex; gap: 8px;">
+                            <select id="saved-voice-select">
+                                <option value="">-- Select or Create New Profile --</option>
+                            </select>
+                            <button id="btn-open-save-modal" class="secondary-btn"
+                                title="Create New Saved Voice">+</button>
+                            <button id="btn-delete-profile" class="secondary-btn hidden" title="Delete Selected Profile"
+                                style="color: #ef4444; border-color: rgba(239, 68, 68, 0.3);">&#128465;</button>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <section class="input-panel glass">
+                <h2>Input Text</h2>
+                <p class="hint">Paste your text below. It will be automatically split by paragraphs (newlines).</p>
+                <div class="setting-item">
+                    <label for="download-title-input">Download Filename</label>
+                    <input type="text" id="download-title-input" placeholder="e.g. Chapter_1" value="Qwen3_TTS">
+                </div>
+                <textarea id="text-input" placeholder="Once upon a time..."></textarea>
+                <button id="btn-parse" class="primary-btn">Parse Paragraphs</button>
+            </section>
+
+            <section class="paragraphs-panel glass hidden" id="paragraphs-container">
+                <div class="paragraphs-header">
+                    <h2>Paragraphs (<span id="para-count">0</span>)</h2>
+                    <div class="bulk-actions" style="align-items: center;">
+                        <button id="btn-generate-all" class="secondary-btn">Generate All</button>
+                        <div id="download-options" class="hidden" style="margin-left: 1rem;">
+                            <button id="btn-download-all" class="primary-btn">Download Audio</button>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="paragraphs-list" class="paragraphs-list">
+                    <!-- Cards will be injected here via JS -->
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <!-- Save Profile Modal -->
+    <div id="save-profile-modal" class="modal hidden">
+        <div class="modal-content glass">
+            <div class="modal-header">
+                <h2>Save New Voice Profile</h2>
+                <button id="btn-close-modal" class="close-btn">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="setting-item wide-setting">
+                    <label for="new-profile-name">Profile Name</label>
+                    <input type="text" id="new-profile-name" placeholder="e.g. My Custom Voice">
+                </div>
+                <div class="setting-item wide-setting">
+                    <label for="new-profile-audio">Reference Audio (.wav or .mp3)</label>
+                    <input type="file" id="new-profile-audio" accept="audio/*">
+                </div>
+                <div class="setting-item wide-setting">
+                    <label for="new-profile-text">Reference Text</label>
+                    <input type="text" id="new-profile-text" placeholder="Text spoken in the audio file">
+                </div>
+                <button id="btn-save-profile" class="primary-btn" style="width: 100%; margin-top: 16px;">Save Voice
+                    Profile</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Activity Log -->
+    <div id="activity-log" class="activity-log">
+        <div class="activity-log-header">
+            <span>Activity Log</span>
+            <button id="btn-minimize-log" class="log-clear-btn" title="Minimize">&#8722;</button>
+        </div>
+        <div id="activity-log-entries" class="activity-log-entries"></div>
+    </div>
+
+    <script src="/static/script.js"></script>
+</body>
+
+</html>

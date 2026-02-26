@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+qwen-tts
+torch
+soundfile
+pydub
+python-multipart
+requests

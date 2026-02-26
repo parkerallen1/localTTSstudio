@@ -1,0 +1,8 @@
+dist/
+build/
+venv/
+__pycache__/
+*.pyc
+.DS_Store
+*.wav
+!static/builtin/default_voice.wav
