@@ -71,7 +71,7 @@ def save_profiles(profiles):
 # Global context for the model to keep it loaded
 model = None
 current_model_id = None
-model_lock = asyncio.Lock()
+model_lock = None
 
 # Global progress state
 download_progress = {
@@ -121,7 +121,10 @@ def _load_model_sync(model_id: str, device: str, dtype: torch.dtype):
     return m
 
 async def get_tts_model(size: str = "1.7B", model_type: str = "CustomVoice"):
-    global model, current_model_id
+    global model, current_model_id, model_lock
+    
+    if model_lock is None:
+        model_lock = asyncio.Lock()
     
     expected_model_id = f"Qwen/Qwen3-TTS-12Hz-{size}-{model_type}"
     
