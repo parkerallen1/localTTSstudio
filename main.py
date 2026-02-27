@@ -19,7 +19,7 @@ from typing import List, Optional
 import requests
 import subprocess
 
-APP_VERSION = "0.9.0" # Hardcoded version, explicitly lower for testing
+APP_VERSION = "1.0.2" # Current application version
 GITHUB_REPO = "parkerallen1/localTTSstudio" # Actual repo for OTA updates
 
 # We attempt to import qwen_tts but catch the error if it fails during initial import
