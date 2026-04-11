@@ -5,13 +5,12 @@ document.addEventListener('DOMContentLoaded', () => {
     const paragraphsList = document.getElementById('paragraphs-list');
     const paraCountSpan = document.getElementById('para-count');
     const btnGenerateAll = document.getElementById('btn-generate-all');
+    const btnStopGeneration = document.getElementById('btn-stop-generation');
     const btnDownloadAll = document.getElementById('btn-download-all');
     const modelTypeSelect = document.getElementById('model-type-select');
     const speakerSelect = document.getElementById('speaker-select');
     const voiceDesignPrompt = document.getElementById('voice-design-prompt');
-    const refAudioUpload = document.getElementById('ref-audio-upload');
-    const refTextInput = document.getElementById('ref-text-input');
-    const downloadTitleInput = document.getElementById('download-title-input');
+    const modelSizeSelect = document.getElementById('model-size-select');
 
     // Auto-Updater
     const updateBanner = document.getElementById('update-banner');
@@ -20,6 +19,25 @@ document.addEventListener('DOMContentLoaded', () => {
     let otaDownloadUrl = null;
 
     const downloadOptions = document.getElementById('download-options');
+
+    // --- Format Toggle ---
+    let selectedFormat = 'wav';
+    document.querySelectorAll('.format-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            document.querySelectorAll('.format-btn').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            selectedFormat = btn.dataset.format;
+        });
+    });
+
+    // --- Project Elements ---
+    const projectNameInput = document.getElementById('project-name-input');
+    const btnOpenProject = document.getElementById('btn-open-project');
+    const saveStatusEl = document.getElementById('save-status');
+    const projectsModal = document.getElementById('projects-modal');
+    const btnCloseProjectsModal = document.getElementById('btn-close-projects-modal');
+    const projectsListEl = document.getElementById('projects-list');
+    const noProjectsMsg = document.getElementById('no-projects-msg');
 
     // --- Activity Log ---
     const logEntries = document.getElementById('activity-log-entries');
@@ -114,44 +132,378 @@ document.addEventListener('DOMContentLoaded', () => {
     const newProfileAudio = document.getElementById('new-profile-audio');
     const newProfileText = document.getElementById('new-profile-text');
 
-    // Progress bar elements
-    const progressPanel = document.getElementById('download-progress-panel');
-    const statusText = document.getElementById('model-status-text');
-    const statusDesc = document.getElementById('model-status-desc');
-    const progressBarFill = document.getElementById('progress-bar-fill');
-
     let paragraphsData = [];
+    let currentProjectId = null;
+    let hasUnsavedChanges = false;
+    let autoSaveTimer = null;
+    let generationStopped = false;
+    let activeAbortController = null;
+    let activeGenerationCount = 0;
 
-    // Shared concurrency pool — keeps up to 3 requests in-flight at once.
-    // On MPS the backend serializes them; on CPU/CUDA they run truly parallel.
+    // ─── Project Management ───────────────────────────────────────────────────
+
+    function setSaveStatus(state) {
+        if (!saveStatusEl) return;
+        if (state === 'saving') {
+            saveStatusEl.textContent = 'Saving...';
+            saveStatusEl.classList.add('saving');
+        } else {
+            saveStatusEl.textContent = 'Saved';
+            saveStatusEl.classList.remove('saving');
+        }
+    }
+
+    function scheduleAutoSave() {
+        hasUnsavedChanges = true;
+        clearTimeout(autoSaveTimer);
+        autoSaveTimer = setTimeout(async () => {
+            if (!currentProjectId) return;
+            setSaveStatus('saving');
+            try {
+                await saveCurrentProject();
+                setSaveStatus('saved');
+            } catch (e) {
+                console.warn('Auto-save failed:', e);
+            }
+        }, 1500);
+    }
+
+    function getCurrentSettings() {
+        return {
+            modelType: modelTypeSelect.value,
+            modelSize: modelSizeSelect ? modelSizeSelect.value : '1.7B',
+            speaker: speakerSelect.value,
+            voiceDesignPrompt: voiceDesignPrompt.value,
+            savedVoiceId: savedVoiceSelect.value,
+            bibleMode: document.getElementById('bible-text-mode') ? document.getElementById('bible-text-mode').checked : false
+        };
+    }
+
+    function markUnsaved() { scheduleAutoSave(); }
+
+    window.addEventListener('beforeunload', (e) => {
+        if (hasUnsavedChanges) {
+            e.preventDefault();
+            e.returnValue = '';
+        }
+    });
+
+    function revokeAllBlobUrls() {
+        paragraphsData.forEach(p => {
+            if (p.audioUrl && p.audioUrl.startsWith('blob:')) {
+                URL.revokeObjectURL(p.audioUrl);
+            }
+        });
+    }
+
+    async function ensureProject() {
+        if (currentProjectId) return;
+        const name = projectNameInput.value.trim() || 'Untitled Project';
+        try {
+            const res = await fetch('/api/projects', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name, settings: getCurrentSettings() })
+            });
+            const project = await res.json();
+            currentProjectId = project.id;
+            projectNameInput.value = project.name;
+            log(`Project "${project.name}" created.`, 'ok');
+        } catch (e) {
+            console.error('Failed to create project:', e);
+        }
+    }
+
+    async function saveCurrentProject() {
+        if (!currentProjectId) return;
+        const name = projectNameInput.value.trim() || 'Untitled Project';
+        const payload = {
+            name,
+            settings: getCurrentSettings(),
+            rawText: textInput.value,
+            paragraphs: paragraphsData.map(p => ({
+                id: p.id,
+                text: p.text,
+                hasAudio: p.status === 'done'
+            }))
+        };
+        await fetch(`/api/projects/${currentProjectId}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        hasUnsavedChanges = false;
+        setSaveStatus('saved');
+    }
+
+    async function autoSaveParagraphAudio(index, blob) {
+        if (!currentProjectId) return;
+        const para = paragraphsData[index];
+        const formData = new FormData();
+        formData.append('audio', blob, 'audio.wav');
+        const res = await fetch(`/api/projects/${currentProjectId}/audio/${para.id}`, {
+            method: 'POST',
+            body: formData
+        });
+        if (!res.ok) {
+            // Audio file didn't land on disk — mark paragraph as failed so it
+            // doesn't get saved as hasAudio:true and show as "Ready" on reload
+            para.status = 'error';
+            para.audioBlob = null;
+            if (para.audioUrl && para.audioUrl.startsWith('blob:')) URL.revokeObjectURL(para.audioUrl);
+            para.audioUrl = null;
+            updateCardUi(index);
+            updateDownloadButtonVisibility();
+            log(`Para ${index + 1} audio save failed — will need to regenerate.`, 'error');
+            return;
+        }
+        await saveCurrentProject();
+    }
+
+    async function loadProject(projectId) {
+        try {
+            const res = await fetch(`/api/projects/${projectId}`);
+            if (!res.ok) throw new Error('Failed to load project');
+            const project = await res.json();
+
+            revokeAllBlobUrls();
+
+            currentProjectId = projectId;
+            projectNameInput.value = project.name;
+
+            // Restore settings
+            const s = project.settings || {};
+            if (s.modelType) modelTypeSelect.value = s.modelType;
+            if (s.modelSize && modelSizeSelect) modelSizeSelect.value = s.modelSize;
+            if (s.speaker) speakerSelect.value = s.speaker;
+            if (s.voiceDesignPrompt !== undefined) voiceDesignPrompt.value = s.voiceDesignPrompt;
+const bibleCheckbox = document.getElementById('bible-text-mode');
+            if (bibleCheckbox && s.bibleMode !== undefined) bibleCheckbox.checked = s.bibleMode;
+            applyModelTypeConfig();
+            if (s.savedVoiceId) {
+                await loadProfiles();
+                savedVoiceSelect.value = s.savedVoiceId;
+                savedVoiceSelect.dispatchEvent(new Event('change'));
+            }
+
+            // Restore paragraphs — audio served from server
+            paragraphsData = (project.paragraphs || []).map(p => ({
+                id: p.id,
+                text: p.text,
+                status: p.hasAudio ? 'done' : 'idle',
+                audioBlob: null,
+                audioUrl: p.hasAudio ? `/api/projects/${projectId}/audio/${p.id}` : null
+            }));
+
+            // Restore raw textarea text (fall back to joining paragraphs for older projects)
+            textInput.value = project.rawText || paragraphsData.map(p => p.text).join('\n');
+
+            if (paragraphsData.length > 0) {
+                renderParagraphs();
+                paragraphsContainer.classList.remove('hidden');
+                paraCountSpan.textContent = paragraphsData.length;
+            } else {
+                paragraphsContainer.classList.add('hidden');
+            }
+            updateDownloadButtonVisibility();
+            projectsModal.classList.add('hidden');
+            hasUnsavedChanges = false;
+            setSaveStatus('saved');
+            log(`Loaded project: "${project.name}"`, 'ok');
+        } catch (e) {
+            log(`Failed to load project: ${e.message}`, 'error');
+        }
+    }
+
+    window.loadProjectFromModal = (id) => loadProject(id);
+
+    window.deleteProjectFromModal = async (id, name) => {
+        if (!confirm(`Delete project "${name}"? This cannot be undone.`)) return;
+        try {
+            await fetch(`/api/projects/${id}`, { method: 'DELETE' });
+            if (currentProjectId === id) {
+                currentProjectId = null;
+                projectNameInput.value = '';
+                paragraphsData = [];
+                textInput.value = '';
+                paragraphsContainer.classList.add('hidden');
+                updateDownloadButtonVisibility();
+                setSaveStatus('saved');
+            }
+            log(`Deleted project: "${name}"`);
+            openProjectsModal(); // refresh list
+        } catch (e) {
+            log(`Failed to delete project: ${e.message}`, 'error');
+        }
+    };
+
+    async function openProjectsModal() {
+        projectsModal.classList.remove('hidden');
+        try {
+            const res = await fetch('/api/projects');
+            const projects = await res.json();
+            projectsListEl.innerHTML = '';
+            if (projects.length === 0) {
+                noProjectsMsg.classList.remove('hidden');
+            } else {
+                noProjectsMsg.classList.add('hidden');
+                projects.forEach(p => {
+                    const date = p.updated_at ? new Date(p.updated_at).toLocaleDateString() : '';
+                    const item = document.createElement('div');
+                    item.className = 'project-item' + (p.id === currentProjectId ? ' project-item-active' : '');
+                    item.innerHTML = `
+                        <div class="project-item-info">
+                            <div class="project-item-name">${escapeHtml(p.name)}</div>
+                            <div class="project-item-meta">${p.para_count} paragraph(s) &middot; ${date}</div>
+                        </div>
+                        <div class="project-item-actions">
+                            <button class="secondary-btn small-btn" onclick="loadProjectFromModal('${p.id}')">Open</button>
+                            <button class="secondary-btn small-btn danger-btn" onclick="deleteProjectFromModal('${p.id}', '${escapeHtml(p.name).replace(/'/g, "\\'")}')">Delete</button>
+                        </div>`;
+                    projectsListEl.appendChild(item);
+                });
+            }
+        } catch (e) {
+            log('Failed to load projects list', 'error');
+        }
+    }
+
+    async function createNewProject() {
+        // Reset settings to defaults
+        modelTypeSelect.value = 'Base';
+        if (modelSizeSelect) modelSizeSelect.value = '1.7B';
+        speakerSelect.value = 'Vivian';
+        voiceDesignPrompt.value = '';
+        const bibleCheckbox = document.getElementById('bible-text-mode');
+        if (bibleCheckbox) bibleCheckbox.checked = false;
+        applyModelTypeConfig();
+
+        try {
+            const res = await fetch('/api/projects', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name: 'Untitled Project', settings: getCurrentSettings() })
+            });
+            const project = await res.json();
+            revokeAllBlobUrls();
+            currentProjectId = project.id;
+            projectNameInput.value = project.name;
+            projectNameInput.select(); // select name so user can type immediately
+            paragraphsData = [];
+            textInput.value = '';
+            paragraphsContainer.classList.add('hidden');
+            updateDownloadButtonVisibility();
+            hasUnsavedChanges = false;
+            setSaveStatus('saved');
+            projectsModal.classList.add('hidden');
+            log(`New project created.`, 'ok');
+        } catch (e) {
+            log(`Failed to create project: ${e.message}`, 'error');
+        }
+    }
+
+    // Wire up "New Project" button inside the Open modal
+    document.getElementById('btn-new-project').addEventListener('click', createNewProject);
+
+    btnOpenProject.addEventListener('click', () => openProjectsModal());
+    btnCloseProjectsModal.addEventListener('click', () => projectsModal.classList.add('hidden'));
+
+    // Project name auto-saves on blur (like Google Docs)
+    projectNameInput.addEventListener('blur', async () => {
+        if (!currentProjectId) return;
+        const trimmed = projectNameInput.value.trim();
+        if (!trimmed) projectNameInput.value = 'Untitled Project';
+        setSaveStatus('saving');
+        try {
+            await saveCurrentProject();
+        } catch (e) {
+            console.warn('Name save failed:', e);
+        }
+    });
+
+    // Text input triggers auto-save after 1.5s of inactivity
+    textInput.addEventListener('input', () => {
+        if (currentProjectId) scheduleAutoSave();
+    });
+
+    // Settings changes trigger auto-save
+    modelTypeSelect.addEventListener('change', () => { if (currentProjectId) scheduleAutoSave(); });
+    if (modelSizeSelect) modelSizeSelect.addEventListener('change', () => { if (currentProjectId) scheduleAutoSave(); });
+    speakerSelect.addEventListener('change', () => { if (currentProjectId) scheduleAutoSave(); });
+    voiceDesignPrompt.addEventListener('input', () => { if (currentProjectId) scheduleAutoSave(); });
+
+    // ─── Keyboard Shortcuts ───────────────────────────────────────────────────
+    document.addEventListener('keydown', (e) => {
+        // Escape — close any open modal
+        if (e.key === 'Escape') {
+            const saveProfileModal = document.getElementById('save-profile-modal');
+            if (projectsModal && !projectsModal.classList.contains('hidden')) {
+                projectsModal.classList.add('hidden');
+            } else if (saveProfileModal && !saveProfileModal.classList.contains('hidden')) {
+                saveProfileModal.classList.add('hidden');
+            }
+        }
+        // Cmd/Ctrl+Enter — generate all
+        if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+            e.preventDefault();
+            if (btnGenerateAll && !btnGenerateAll.disabled) btnGenerateAll.click();
+        }
+    });
+
+    // ─────────────────────────────────────────────────────────────────────────
+
+    function setGeneratingState(active) {
+        if (active) {
+            btnGenerateAll.classList.add('hidden');
+            btnStopGeneration.classList.remove('hidden');
+        } else {
+            btnGenerateAll.classList.remove('hidden');
+            btnGenerateAll.disabled = false;
+            btnGenerateAll.textContent = 'Generate All';
+            btnStopGeneration.classList.add('hidden');
+        }
+    }
+
+    btnStopGeneration.addEventListener('click', () => {
+        generationStopped = true;
+        if (activeAbortController) activeAbortController.abort();
+        log('Generation stopped.', 'warn');
+    });
+
+    // Serialized generation pool — MPS is not thread-safe, one request at a time.
     async function runGenerationPool() {
-        const CONCURRENCY = 3;
+        generationStopped = false;
         const queue = paragraphsData
             .map((p, i) => i)
             .filter(i => paragraphsData[i].status !== 'done');
 
         function next() {
-            if (queue.length === 0) return Promise.resolve();
+            if (queue.length === 0 || generationStopped) return Promise.resolve();
             const i = queue.shift();
             return window.generateSingle(i).finally(() => next());
         }
 
-        const workers = Array.from({ length: Math.min(CONCURRENCY, queue.length) }, next);
-        await Promise.all(workers);
+        await next();
     }
 
-    // Parse text area into paragraphs, then immediately start generation
+    // Parse text area into paragraphs
     btnParse.addEventListener('click', async () => {
         let text = textInput.value.trim();
         if (!text) return;
 
-        text = cleanText(text);
+        const bibleCheckbox = document.getElementById('bible-text-mode');
+        text = cleanTextGeneral(text);
+        if (bibleCheckbox && bibleCheckbox.checked) {
+            text = cleanTextBible(text);
+        }
 
         // Split by newlines, filter empty
         const rawParagraphs = text.split(/\n+/).map(p => p.trim()).filter(p => p.length > 0);
+        const batchId = Date.now();
 
+        revokeAllBlobUrls();
         paragraphsData = rawParagraphs.map((text, index) => ({
-            id: `para-${index}`,
+            id: `para-${batchId}-${index}`,
             text: text,
             status: 'idle',
             audioBlob: null,
@@ -163,15 +515,11 @@ document.addEventListener('DOMContentLoaded', () => {
         paragraphsContainer.classList.remove('hidden');
         paraCountSpan.textContent = paragraphsData.length;
         updateDownloadButtonVisibility();
-        log(`Parsed ${paragraphsData.length} paragraph(s) — starting generation...`);
+        log(`Parsed ${paragraphsData.length} paragraph(s). Click "Generate All" to start.`);
 
-        // Auto-start generation immediately
-        btnGenerateAll.disabled = true;
-        btnGenerateAll.textContent = 'Generating All...';
-        await runGenerationPool();
-        btnGenerateAll.disabled = false;
-        btnGenerateAll.textContent = 'Generate All';
-        log('All done.', 'ok');
+        // Ensure a project exists for saving
+        await ensureProject();
+        markUnsaved();
     });
 
     function renderParagraphs() {
@@ -183,6 +531,13 @@ document.addEventListener('DOMContentLoaded', () => {
             card.id = para.id;
 
             card.innerHTML = `
+                <div class="paragraph-card-header">
+                    <div class="para-reorder-btns">
+                        <button class="reorder-btn" onclick="moveParagraph(${index}, -1)" ${index === 0 ? 'disabled' : ''} title="Move up">&#8593;</button>
+                        <button class="reorder-btn" onclick="moveParagraph(${index}, 1)" ${index === paragraphsData.length - 1 ? 'disabled' : ''} title="Move down">&#8595;</button>
+                    </div>
+                    <button class="delete-para-btn" onclick="deleteParagraph(${index})" title="Remove paragraph">&times;</button>
+                </div>
                 <textarea class="paragraph-text-edit" oninput="handleEdit(${index}, this.value)" rows="3">${escapeHtml(para.text)}</textarea>
                 <div class="card-actions">
                     <span class="status-badge ${para.status}" id="status-${para.id}">
@@ -199,6 +554,18 @@ document.addEventListener('DOMContentLoaded', () => {
                 </div>
             `;
             paragraphsList.appendChild(card);
+
+            // Handle broken audio (e.g. file deleted from disk after project was saved)
+            const audioEl = document.getElementById(`audio-${para.id}`);
+            if (audioEl && para.audioUrl) {
+                audioEl.addEventListener('error', () => {
+                    para.status = 'idle';
+                    para.audioUrl = null;
+                    para.audioBlob = null;
+                    updateCardUi(index);
+                    updateDownloadButtonVisibility();
+                }, { once: true });
+            }
         });
     }
 
@@ -218,6 +585,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const para = paragraphsData[index];
         if (para.text !== newText) {
             para.text = newText;
+            markUnsaved();
             if (para.status === 'done') {
                 para.status = 'regenerate';
                 updateCardUi(index);
@@ -226,10 +594,36 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     };
 
+    window.deleteParagraph = (index) => {
+        const para = paragraphsData[index];
+        if (para.audioUrl) URL.revokeObjectURL(para.audioUrl);
+        paragraphsData.splice(index, 1);
+        renderParagraphs();
+        paraCountSpan.textContent = paragraphsData.length;
+        updateDownloadButtonVisibility();
+        if (paragraphsData.length === 0) {
+            paragraphsContainer.classList.add('hidden');
+        }
+    };
+
+    window.moveParagraph = (index, direction) => {
+        const newIndex = index + direction;
+        if (newIndex < 0 || newIndex >= paragraphsData.length) return;
+        [paragraphsData[index], paragraphsData[newIndex]] = [paragraphsData[newIndex], paragraphsData[index]];
+        renderParagraphs();
+        markUnsaved();
+    };
+
     // Expose to window for the inline onclick handlers
     window.generateSingle = async (index) => {
         const para = paragraphsData[index];
         if (para.status === 'generating') return;
+
+        // Validate before committing to generation
+        if (modelTypeSelect.value === 'Base' && !savedVoiceSelect.value) {
+            log("Please select a saved voice profile first.", 'error');
+            return;
+        }
 
         para.status = 'generating';
         if (para.audioUrl) URL.revokeObjectURL(para.audioUrl);
@@ -238,11 +632,16 @@ document.addEventListener('DOMContentLoaded', () => {
         updateCardUi(index);
         log(`Generating para ${index + 1}...`);
 
+        // Track active generations so the stop button appears for single-para too
+        activeGenerationCount++;
+        if (activeGenerationCount === 1) setGeneratingState(true);
+        activeAbortController = new AbortController();
+
         try {
             const formData = new FormData();
             formData.append("text", para.text);
             formData.append("language", "English");
-            formData.append("model_size", "1.7B");
+            formData.append("model_size", modelSizeSelect ? modelSizeSelect.value : "1.7B");
             formData.append("model_type", modelTypeSelect.value);
 
             if (modelTypeSelect.value === 'CustomVoice') {
@@ -250,18 +649,13 @@ document.addEventListener('DOMContentLoaded', () => {
             } else if (modelTypeSelect.value === 'VoiceDesign') {
                 formData.append("voice_design_prompt", voiceDesignPrompt.value);
             } else if (modelTypeSelect.value === 'Base') {
-                if (!savedVoiceSelect.value) {
-                    alert("Please select a saved voice profile first.");
-                    para.status = 'idle';
-                    updateCardUi(index);
-                    return;
-                }
                 formData.append("profile_id", savedVoiceSelect.value);
             }
 
             const response = await fetch('/api/generate', {
                 method: 'POST',
-                body: formData
+                body: formData,
+                signal: activeAbortController.signal
             });
 
             if (!response.ok) {
@@ -277,10 +671,21 @@ document.addEventListener('DOMContentLoaded', () => {
             para.status = 'done';
             log(`Para ${index + 1} ready.`, 'ok');
 
+            // Auto-save audio and project metadata
+            autoSaveParagraphAudio(index, blob).catch(e => console.warn('Auto-save failed:', e));
+
         } catch (error) {
-            console.error('Generation failed:', error);
-            para.status = 'error';
-            log(`Para ${index + 1} failed.`, 'error');
+            if (error.name === 'AbortError') {
+                para.status = 'idle';
+            } else {
+                console.error('Generation failed:', error);
+                para.status = 'error';
+                log(`Para ${index + 1} failed.`, 'error');
+            }
+        } finally {
+            activeAbortController = null;
+            activeGenerationCount--;
+            if (activeGenerationCount === 0) setGeneratingState(false);
         }
 
         updateCardUi(index);
@@ -314,15 +719,9 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     btnGenerateAll.addEventListener('click', async () => {
-        btnGenerateAll.disabled = true;
-        btnGenerateAll.textContent = 'Generating All...';
         log(`Generating remaining paragraph(s)...`);
-
         await runGenerationPool();
-
-        btnGenerateAll.disabled = false;
-        btnGenerateAll.textContent = 'Generate All';
-        log('All done.', 'ok');
+        if (!generationStopped) log('All done.', 'ok');
     });
 
     function updateDownloadButtonVisibility() {
@@ -348,12 +747,25 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     btnDownloadAll.addEventListener('click', async () => {
-        const blobsToMerge = paragraphsData
-            .filter(p => p.status === 'done' && p.audioBlob != null)
-            .map(p => p.audioBlob);
+        // Collect blobs — fetch from server if blob was not cached in memory
+        const blobsToMerge = (await Promise.all(
+            paragraphsData
+                .filter(p => p.status === 'done' && (p.audioBlob != null || p.audioUrl != null))
+                .map(async p => {
+                    if (p.audioBlob) return p.audioBlob;
+                    if (p.audioUrl) {
+                        const r = await fetch(p.audioUrl);
+                        if (!r.ok) return null;
+                        const b = await r.blob();
+                        p.audioBlob = b; // cache it
+                        return b;
+                    }
+                    return null;
+                })
+        )).filter(b => b != null);
 
         if (blobsToMerge.length === 0) {
-            alert("No audio generated yet!");
+            log("No audio generated yet!", 'error');
             return;
         }
 
@@ -399,14 +811,30 @@ document.addEventListener('DOMContentLoaded', () => {
                 log('Treatment failed. Using raw audio.', 'warn');
             }
 
-            const customTitle = downloadTitleInput.value.trim() || 'Qwen3_TTS';
-            // sanitize the filename
+            // Convert format if needed
+            if (selectedFormat === 'm4a') {
+                log('Converting to M4A...');
+                btnDownloadAll.textContent = 'Converting...';
+                const convertFormData = new FormData();
+                convertFormData.append('audio_file', finalBlob, 'audio.wav');
+                convertFormData.append('output_format', 'm4a');
+                const convertRes = await fetch('/api/convert', { method: 'POST', body: convertFormData });
+                if (convertRes.ok) {
+                    finalBlob = await convertRes.blob();
+                    log('Converted to M4A.', 'ok');
+                } else {
+                    log('M4A conversion failed. Downloading as WAV.', 'warn');
+                }
+            }
+
+            const customTitle = projectNameInput.value.trim() || 'Qwen3_TTS';
             const safeTitle = customTitle.replace(/[^a-z0-9_ -]/gi, '_').replace(/\s+/g, '_');
+            const ext = (selectedFormat === 'm4a' && finalBlob.type.includes('mp4')) ? 'm4a' : 'wav';
 
             const downloadUrl = URL.createObjectURL(finalBlob);
             const a = document.createElement('a');
             a.href = downloadUrl;
-            a.download = `${safeTitle}.wav`;
+            a.download = `${safeTitle}.${ext}`;
             document.body.appendChild(a);
             a.click();
             document.body.removeChild(a);
@@ -416,7 +844,6 @@ document.addEventListener('DOMContentLoaded', () => {
         } catch (error) {
             console.error("Failed to merge:", error);
             log(`Download failed: ${error.message}`, 'error');
-            alert("Failed to merge audio.");
         }
 
         btnDownloadAll.disabled = false;
@@ -511,7 +938,7 @@ document.addEventListener('DOMContentLoaded', () => {
             log(`Deleted voice profile: ${profileName}`);
             await loadProfiles();
         } catch (e) {
-            alert("Error deleting profile: " + e.message);
+            log("Error deleting profile: " + e.message, 'error');
         }
     });
 
@@ -530,7 +957,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const file = newProfileAudio.files[0];
 
         if (!name || !text || !file) {
-            alert("Please fill in all fields to save a profile.");
+            log("Please fill in all fields (name, audio, and text) to save a profile.", 'error');
             return;
         }
 
@@ -562,7 +989,7 @@ document.addEventListener('DOMContentLoaded', () => {
             saveProfileModal.classList.add('hidden');
 
         } catch (e) {
-            alert("Error saving profile: " + e.message);
+            log("Error saving profile: " + e.message, 'error');
         } finally {
             btnSaveProfile.disabled = false;
             btnSaveProfile.textContent = "Save Voice Profile";
@@ -595,11 +1022,13 @@ document.addEventListener('DOMContentLoaded', () => {
             } else if (data.status === 'ready') {
                 isFinished = true;
                 updateStatusBadge('ready', 'Model Ready');
+                log('Model initialized successfully.', 'ok');
                 evtSource.close();
             } else if (data.status === 'error') {
                 isFinished = true;
                 updateStatusBadge('error', 'Model Error');
                 console.error("Model Error:", data.description);
+                log(`Failed: ${data.description}`, 'error');
                 evtSource.close();
             } else {
                 updateStatusBadge('idle', 'Model Status: Idle');
@@ -616,7 +1045,25 @@ document.addEventListener('DOMContentLoaded', () => {
         evtSource.close();
     };
 
-    function cleanText(text) {
+    // General cleanup applied to all text
+    function cleanTextGeneral(text) {
+        // Ending every line with a period
+        text = text.replace(/(^[^\n.]+)(?=$|\n)/gm, '$1.');
+
+        // remove any lines with just a period and whitespace
+        text = text.replace(/^\.\s*$/gm, '');
+
+        // removes blank lines and whitespace
+        text = text.replace(/\n+/g, '\n').trim();
+
+        // sometimes brackets mess up tts
+        text = text.replace(/[\[\]]/g, ',');
+
+        return text;
+    }
+
+    // Bible-specific transforms — only applied when "Bible text formatting" is checked
+    function cleanTextBible(text) {
         // Replace numbered Bible books
         text = text.replace(/\b1 (Corinthians)\b/g, 'First $1');
         text = text.replace(/\b2 (Corinthians)\b/g, 'Second $1');
@@ -669,20 +1116,8 @@ document.addEventListener('DOMContentLoaded', () => {
         text = text.replace(/(\d+):(\d+)/g, '$1. verse $2,');
         text = text.replace(/[,.]-(\d+)/g, ' through $1.');
         text = text.replace(/\[(\d+)\]/g, '');
-        // Replace colons not part of time notation (e.g. 3:00) — digit:digit already handled above
+        // Replace colons not part of time notation
         text = text.replace(/(?<!\d):(?!\d)/g, ', ');
-
-        // Ending every line with a period
-        text = text.replace(/(^[^\n.]+)(?=$|\n)/gm, '$1.');
-
-        // remove any lines with just a period and whitespace
-        text = text.replace(/^\.\s*$/gm, '');
-
-        // removes blank lines and whitespace
-        text = text.replace(/\n+/g, '\n').trim();
-
-        // sometimes brackets mess up tts
-        text = text.replace(/[\[\]]/g, ',');
 
         return text;
     }

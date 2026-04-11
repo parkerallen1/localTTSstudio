@@ -39,6 +39,15 @@
             <button id="btn-do-update" class="primary-btn small-btn">Update Now</button>
         </div>
 
+        <!-- Project Bar -->
+        <div class="project-bar glass" id="project-bar">
+            <input type="text" id="project-name-input" class="project-name-input" placeholder="Untitled Project" value="">
+            <div class="project-bar-right">
+                <span id="save-status" class="save-status">Saved</span>
+                <button id="btn-open-project" class="secondary-btn small-btn">Open</button>
+            </div>
+        </div>
+
         <main>
             <section class="settings-panel glass">
                 <h2>Settings</h2>
@@ -52,19 +61,28 @@
                         </select>
                     </div>
 
+                    <!-- Model Size -->
+                    <div class="setting-item">
+                        <label for="model-size-select">Model Size</label>
+                        <select id="model-size-select">
+                            <option value="1.7B" selected>1.7B (Better Quality)</option>
+                            <option value="0.6B">0.6B (Faster, Less VRAM)</option>
+                        </select>
+                    </div>
+
                     <!-- CustomVoice: Speaker Select -->
                     <div id="config-custom-voice" class="setting-item hidden">
                         <label for="speaker-select">Speaker</label>
                         <select id="speaker-select">
-                            <option value="vivian">Vivian</option>
-                            <option value="aiden">Aiden</option>
-                            <option value="dylan">Dylan</option>
-                            <option value="eric">Eric</option>
-                            <option value="ono_anna">Ono Anna</option>
-                            <option value="ryan">Ryan</option>
-                            <option value="serena">Serena</option>
-                            <option value="sohee">Sohee</option>
-                            <option value="uncle_fu">Uncle Fu</option>
+                            <option value="Vivian">Vivian</option>
+                            <option value="Aiden">Aiden</option>
+                            <option value="Dylan">Dylan</option>
+                            <option value="Eric">Eric</option>
+                            <option value="Ono_Anna">Ono Anna</option>
+                            <option value="Ryan">Ryan</option>
+                            <option value="Serena">Serena</option>
+                            <option value="Sohee">Sohee</option>
+                            <option value="Uncle_Fu">Uncle Fu</option>
                         </select>
                     </div>
 
@@ -94,12 +112,13 @@
             <section class="input-panel glass">
                 <h2>Input Text</h2>
                 <p class="hint">Paste your text below. It will be automatically split by paragraphs (newlines).</p>
-                <div class="setting-item">
-                    <label for="download-title-input">Download Filename</label>
-                    <input type="text" id="download-title-input" placeholder="e.g. Chapter_1" value="Qwen3_TTS">
-                </div>
                 <textarea id="text-input" placeholder="Once upon a time..."></textarea>
-                <button id="btn-parse" class="primary-btn">Parse Paragraphs</button>
+                <div class="parse-options">
+                    <button id="btn-parse" class="primary-btn">Parse Paragraphs</button>
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="bible-text-mode"> Bible text formatting
+                    </label>
+                </div>
             </section>
 
             <section class="paragraphs-panel glass hidden" id="paragraphs-container">
@@ -107,7 +126,12 @@
                     <h2>Paragraphs (<span id="para-count">0</span>)</h2>
                     <div class="bulk-actions" style="align-items: center;">
                         <button id="btn-generate-all" class="secondary-btn">Generate All</button>
-                        <div id="download-options" class="hidden" style="margin-left: 1rem;">
+                        <button id="btn-stop-generation" class="danger-btn hidden">Stop</button>
+                        <div id="download-options" class="hidden" style="margin-left: 1rem; display: flex; align-items: center; gap: 8px;">
+                            <div class="format-toggle">
+                                <button class="format-btn active" data-format="wav">WAV</button>
+                                <button class="format-btn" data-format="m4a">M4A</button>
+                            </div>
                             <button id="btn-download-all" class="primary-btn">Download Audio</button>
                         </div>
                     </div>
@@ -118,6 +142,23 @@
                 </div>
             </section>
         </main>
+    </div>
+
+    <!-- Projects Modal -->
+    <div id="projects-modal" class="modal hidden">
+        <div class="modal-content glass">
+            <div class="modal-header">
+                <h2>Projects</h2>
+                <div style="display: flex; gap: 8px; align-items: center;">
+                    <button id="btn-new-project" class="primary-btn small-btn">+ New Project</button>
+                    <button id="btn-close-projects-modal" class="close-btn">&times;</button>
+                </div>
+            </div>
+            <div class="modal-body">
+                <p id="no-projects-msg" class="hint hidden">No saved projects yet.</p>
+                <div id="projects-list"></div>
+            </div>
+        </div>
     </div>
 
     <!-- Save Profile Modal -->

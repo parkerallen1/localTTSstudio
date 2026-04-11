@@ -156,8 +156,8 @@ header h1 {
 }
 
 .info-popover strong {
-    -webkit-text-fill-color: var(--text-primary);
-    color: var(--text-primary);
+    -webkit-text-fill-color: var(--text-main);
+    color: var(--text-main);
 }
 
 .info-tooltip:hover .info-popover {
@@ -254,23 +254,6 @@ h2 {
     margin-bottom: 1rem;
 }
 
-.progress-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: 1rem;
-}
-
-.progress-header h2 {
-    margin-bottom: 0;
-    border-bottom: none;
-    padding-bottom: 0;
-}
-
-.progress-header .hint {
-    margin-bottom: 0;
-}
-
 .settings-grid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
@@ -339,20 +322,8 @@ textarea:focus {
     border-color: var(--primary);
 }
 
-.voice-config-section {
-    margin-top: 1.5rem;
-    padding-top: 1.5rem;
-    border-top: 1px solid rgba(255, 255, 255, 0.1);
-}
-
 .wide-setting {
     width: 100%;
-}
-
-.cloning-grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 1.5rem;
 }
 
 .hidden {
@@ -395,8 +366,42 @@ button {
     border-color: rgba(255, 255, 255, 0.1);
 }
 
-.hidden {
-    display: none !important;
+button:focus-visible {
+    outline: 2px solid var(--primary);
+    outline-offset: 2px;
+}
+
+.danger-btn {
+    background: transparent;
+    border: 1px solid rgba(248, 81, 73, 0.4);
+    color: var(--danger);
+}
+
+.danger-btn:hover {
+    background: rgba(248, 81, 73, 0.1);
+    border-color: var(--danger);
+}
+
+.parse-options {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    flex-wrap: wrap;
+}
+
+.checkbox-label {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: 0.9rem;
+    color: var(--text-muted);
+    cursor: pointer;
+    user-select: none;
+}
+
+.checkbox-label input[type="checkbox"] {
+    width: auto;
+    cursor: pointer;
 }
 
 .paragraphs-header {
@@ -419,6 +424,35 @@ button {
     gap: 0.5rem;
 }
 
+.format-toggle {
+    display: flex;
+    border: 1px solid var(--glass-border);
+    border-radius: 6px;
+    overflow: hidden;
+}
+
+.format-btn {
+    background: transparent;
+    border: none;
+    border-radius: 0;
+    color: var(--text-muted);
+    font-size: 0.8rem;
+    font-weight: 600;
+    padding: 0 10px;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+}
+
+.format-btn:hover {
+    background: rgba(255, 255, 255, 0.05);
+    color: var(--text-main);
+}
+
+.format-btn.active {
+    background: rgba(88, 166, 255, 0.15);
+    color: var(--primary);
+}
+
 .paragraphs-list {
     display: flex;
     flex-direction: column;
@@ -433,6 +467,57 @@ button {
     display: flex;
     flex-direction: column;
     gap: 0.75rem;
+}
+
+.paragraph-card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: -0.5rem;
+}
+
+.para-reorder-btns {
+    display: flex;
+    gap: 2px;
+}
+
+.reorder-btn {
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
+    font-size: 0.9rem;
+    cursor: pointer;
+    padding: 0 0.25rem;
+    border-radius: 4px;
+    line-height: 1.4;
+    transition: background 0.15s, color 0.15s;
+}
+
+.reorder-btn:hover:not(:disabled) {
+    background: rgba(255, 255, 255, 0.08);
+    color: var(--text-main);
+}
+
+.reorder-btn:disabled {
+    opacity: 0.2;
+    cursor: default;
+}
+
+.delete-para-btn {
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
+    font-size: 1.25rem;
+    cursor: pointer;
+    line-height: 1;
+    padding: 0 0.3rem;
+    border-radius: 4px;
+    transition: background 0.2s ease, color 0.2s ease;
+}
+
+.delete-para-btn:hover {
+    background: rgba(248, 81, 73, 0.15);
+    color: var(--danger);
 }
 
 .paragraph-text {
@@ -725,4 +810,121 @@ button {
 
 .log-entry.error .log-msg {
     color: #fc8181;
+}
+
+/* ─── Project Bar ─────────────────────────────────────────────────────────── */
+
+.project-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 20px;
+    margin-bottom: 16px;
+    gap: 12px;
+}
+
+.project-bar-right {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-shrink: 0;
+}
+
+.project-name-input {
+    background: transparent;
+    border: none;
+    color: var(--text-main);
+    font-size: 1.05rem;
+    font-weight: 600;
+    padding: 4px 6px;
+    flex: 1;
+    min-width: 120px;
+    border-radius: 4px;
+    transition: background 0.15s;
+}
+
+.project-name-input:hover {
+    background: rgba(255, 255, 255, 0.05);
+}
+
+.project-name-input:focus {
+    outline: none;
+    background: rgba(255, 255, 255, 0.07);
+}
+
+.project-name-input::placeholder {
+    color: var(--text-muted);
+    font-weight: 400;
+}
+
+.save-status {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    opacity: 0.7;
+    white-space: nowrap;
+    transition: opacity 0.3s;
+}
+
+.save-status.saving {
+    opacity: 1;
+    color: var(--primary);
+}
+
+/* ─── Project List (in Open modal) ───────────────────────────────────────── */
+
+.project-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 16px;
+    border-radius: 8px;
+    border: 1px solid var(--glass-border);
+    margin-bottom: 8px;
+    transition: background 0.15s, border-color 0.15s;
+}
+
+.project-item:hover {
+    background: rgba(88, 166, 255, 0.06);
+    border-color: rgba(88, 166, 255, 0.2);
+}
+
+.project-item-active {
+    border-color: rgba(88, 166, 255, 0.4);
+    background: rgba(88, 166, 255, 0.05);
+}
+
+.project-item-info {
+    flex: 1;
+    min-width: 0;
+}
+
+.project-item-name {
+    font-weight: 600;
+    color: var(--text-main);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.project-item-meta {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    margin-top: 2px;
+}
+
+.project-item-actions {
+    display: flex;
+    gap: 6px;
+    margin-left: 12px;
+    flex-shrink: 0;
+}
+
+.danger-btn {
+    color: var(--danger) !important;
+    border-color: rgba(248, 81, 73, 0.3) !important;
+}
+
+.danger-btn:hover {
+    background: rgba(248, 81, 73, 0.1) !important;
+    border-color: rgba(248, 81, 73, 0.5) !important;
 }

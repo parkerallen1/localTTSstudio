@@ -1,0 +1,418 @@
+{
+    "id": "d0dd6df9-753b-4572-8e00-78f42d9a190e",
+    "name": "Finding Your Second Wind",
+    "created_at": "2026-04-10T19:21:38.597026+00:00",
+    "updated_at": "2026-04-10T22:51:14.479147+00:00",
+    "schema_version": 1,
+    "settings": {
+        "modelType": "Base",
+        "modelSize": "1.7B",
+        "speaker": "Vivian",
+        "voiceDesignPrompt": "",
+        "savedVoiceId": "__builtin_default__",
+        "bibleMode": true
+    },
+    "paragraphs": [
+        {
+            "id": "para-1775848998225-0",
+            "text": "Finding Your Second Wind.",
+            "hasAudio": true
+        },
+        {
+            "id": "para-1775848998225-1",
+            "text": "How God refreshes us in times of exhaustion.",
+            "hasAudio": true
+        },
+        {
+            "id": "para-1775848998225-5",
+            "text": "\ud83e\uddd8 Settle in.",
+            "hasAudio": true
+        },
+        {
+            "id": "para-1775848998225-6",
+            "text": "Take a deep breath. Turn off notifications on your phone. Ask God to quiet your heart and open your eyes to what he wants to show you today.",
+            "hasAudio": true
+        },
+        {
+            "id": "para-1775848998225-7",
+            "text": "\ud83d\udcad Thought starter .",
+            "hasAudio": true
+        },
+        {
+            "id": "para-1775848998225-8",
+            "text": "Weariness shows up everywhere in Scripture\u2014from psalmists\u2019 tears to Jesus resting at a well. The Bible does not rebuke or shame tired people; instead, it reveals a God who moves toward them with compassion, rest, and renewal.",
+            "hasAudio": true
+        },
+        {
+            "id": "para-1775848998225-9",
+            "text": "We will grow weary physically, mentally, and spiritually at times\u2014but God encourages us and helps us to keep pressing on.",
+            "hasAudio": true
+        },
+        {
+            "id": "para-1775848998225-10",
+            "text": "Here\u2019s what we\u2019ll learn in this Quick Quiet Time, .",
+            "hasAudio": true
+        },
+        {
+            "id": "para-1775848998225-11",
+            "text": "Prayer keeps us refreshed in our moments of greatest exhaustion.",
+            "hasAudio": true
+        },
+        {
+            "id": "para-1775848998225-12",
+            "text": "God wants honesty from us, not perfection.",
+            "hasAudio": true
+        },
+        {
+            "id": "para-1775848998225-13",
+            "text": "Even Jesus got weary, and he can give us the way to our second wind.",
+            "hasAudio": true
+        },
+        {
+            "id": "para-1775848998225-14",
+            "text": "\ud83d\ude4f Don\u2019t drop prayer.",
+            "hasAudio": true
+        },
+        {
+            "id": "para-1775848998225-15",
+            "text": "Second Corinthians 5. verse 2, The Living Bible..",
+            "hasAudio": true
+        },
+        {
+            "id": "para-1775848998225-16",
+            "text": "How weary we grow of our present bodies. That is why we look forward eagerly to the day when we shall have heavenly bodies that we shall put on like new clothes.",
+            "hasAudio": true
+        },
+        {
+            "id": "para-1775848998225-17",
+            "text": "Second Corinthians 11. verse 26, The Living Bible..",
+            "hasAudio": true
+        },
+        {
+            "id": "para-1775848998225-18",
+            "text": "I have traveled many weary miles and have been often in great danger from flooded rivers and from robbers and from my own people\u2026.",
+            "hasAudio": true
+        },
+        {
+            "id": "para-1775848998225-19",
+            "text": "Galatians 6. verse 9, Amplified Bible Classic..",
+            "hasAudio": true
+        },
+        {
+            "id": "para-1775848998225-20",
+            "text": "And let us not lose heart and grow weary and faint in acting nobly and doing right, for in due time and at the appointed season we shall reap, if we do not loosen and relax our courage and faint.",
+            "hasAudio": true
+        },
+        {
+            "id": "para-1775848998225-21",
+            "text": "Colossians 4. verse 2, The Living Bible..",
+            "hasAudio": true
+        },
+        {
+            "id": "para-1775848998225-22",
+            "text": "Don't be weary in prayer; keep at it; watch for God's answers, and remember to be thankful when they come.",
+            "hasAudio": true
+        },
+        {
+            "id": "para-1775848998225-23",
+            "text": "Second Thessalonians 3. verse 13, Amplified Bible Classic..",
+            "hasAudio": true
+        },
+        {
+            "id": "para-1775848998225-24",
+            "text": "And as for you, brethren, do not become weary or lose heart in doing right ,but continue in well-doing without weakening,.",
+            "hasAudio": true
+        },
+        {
+            "id": "para-1775848998225-25",
+            "text": "Weariness is a normal part of a faithful life. Even the most committed leaders\u2014like Paul\u2014walked through long, exhausting seasons.",
+            "hasAudio": true
+        },
+        {
+            "id": "para-1775848998225-26",
+            "text": "Paul\u2019s life proves that weariness does not mean we are outside of God\u2019s will. It\u2019s just an opportunity to come closer to him.",
+            "hasAudio": true
+        },
+        {
+            "id": "para-1775848998225-27",
+            "text": "\u27a1\ufe0f The point,  We all have weary seasons, but we should never let them stop us from praying. Paul was often weary, but got his strength from prayer.",
+            "hasAudio": true
+        },
+        {
+            "id": "para-1775848998225-28",
+            "text": "\ud83e\udd71 Be honest about weariness before God.",
+            "hasAudio": true
+        },
+        {
+            "id": "para-1775848998225-29",
+            "text": "Psalm 119. verse 28, Christian Standard Bible..",
+            "hasAudio": true
+        },
+        {
+            "id": "para-1775848998225-30",
+            "text": "I am weary from grief; strengthen me through your word.",
+            "hasAudio": true
+        },
+        {
+            "id": "para-1775848998225-31",
+            "text": "Psalm 119. verse 82, Christian Standard Bible..",
+            "hasAudio": true
+        },
+        {
+            "id": "para-1775848998225-32",
+            "text": "My eyes grow weary looking for what you have promised; I ask, \"When will you comfort me?\".",
+            "hasAudio": true
+        },
+        {
+            "id": "para-1775848998225-33",
+            "text": "Psalm 119. verse 123, Contemporary English Version..",
+            "hasAudio": true
+        },
+        {
+            "id": "para-1775848998225-34",
+            "text": "My eyes are weary from waiting to see you keep your promise to come and save me.",
+            "hasAudio": true
+        },
+        {
+            "id": "para-1775848998225-35",
+            "text": "The psalmist didn\u2019t hide his exhaustion. He was honest with God about what was wearing him out and what it made him feel, and asked God to help him.",
+            "hasAudio": true
+        },
+        {
+            "id": "para-1775848998225-36",
+            "text": "\ud83d\udca5 Try it,  Take a moment to name your own weariness to God.",
+            "hasAudio": true
+        },
+        {
+            "id": "para-1775848998225-37",
+            "text": "\ud83d\udca7 God brings refreshment.",
+            "hasAudio": true
+        },
+        {
+            "id": "para-1775848998225-38",
+            "text": "Matthew 11. verse 28, The Passion Translation..",
+            "hasAudio": true
+        },
+        {
+            "id": "para-1775848998225-39",
+            "text": "\u201cAre you weary, carrying a heavy burden? Come to me. I will refresh your life, for I am your oasis.\u201d",
+            "hasAudio": true
+        },
+        {
+            "id": "para-1775848998225-40",
+            "text": "Proverbs 25. verse 25, BSB.",
+            "hasAudio": true
+        },
+        {
+            "id": "para-1775848998225-41",
+            "text": "Like cold water to a weary soul is good news from a distant land.",
+            "hasAudio": true
+        },
+        {
+            "id": "para-1775848998225-42",
+            "text": "God\u2019s presence refreshes; he doesn\u2019t pressure. He can be the place we turn to when we need rest.",
+            "hasAudio": true
+        },
+        {
+            "id": "para-1775848998225-43",
+            "text": "\ud83e\udd14 Reflect,  Where have you felt even a small sip of refreshment lately?.",
+            "hasAudio": true
+        },
+        {
+            "id": "para-1775848998225-44",
+            "text": "\u2764\ufe0f Jesus sees our weariness.",
+            "hasAudio": true
+        },
+        {
+            "id": "para-1775848998225-45",
+            "text": "Matthew 9. verse 36, New King James Version..",
+            "hasAudio": true
+        },
+        {
+            "id": "para-1775848998225-46",
+            "text": "But when He saw the multitudes, He was moved with compassion for them, because they were weary and scattered, like sheep having no shepherd.",
+            "hasAudio": true
+        },
+        {
+            "id": "para-1775848998225-47",
+            "text": "Matthew 11. verse 29, Voice.",
+            "hasAudio": true
+        },
+        {
+            "id": "para-1775848998225-48",
+            "text": "Put My yoke upon your shoulders-it might appear heavy at first, but it is perfectly fitted to your curves. Learn from Me, for I am gentle and humble of heart. When you are yoked to Me, your weary souls will find rest.",
+            "hasAudio": true
+        },
+        {
+            "id": "para-1775848998225-49",
+            "text": "Jesus notices weary people and is moved with compassion for them. He wants us to come to him with our needs and feelings, and won\u2019t judge us for having them.",
+            "hasAudio": true
+        },
+        {
+            "id": "para-1775848998225-50",
+            "text": "\ud83d\udd4a\ufe0f Even Jesus was weary.",
+            "hasAudio": true
+        },
+        {
+            "id": "para-1775848998225-51",
+            "text": "John 4. verse 6, BSB.",
+            "hasAudio": true
+        },
+        {
+            "id": "para-1775848998225-52",
+            "text": "Since Jacob\u2019s well was there, Jesus, weary from His journey, sat down by the well. It was about the sixth hour.",
+            "hasAudio": true
+        },
+        {
+            "id": "para-1775848998225-53",
+            "text": "Our fatigue doesn\u2019t disqualify us from God\u2019s purpose. It makes us more like Jesus.",
+            "hasAudio": true
+        },
+        {
+            "id": "para-1775848998225-54",
+            "text": "\ud83e\udd14 Reflect,  How can you learn from how Jesus handled his weariness? What\u2019s one thing he did that you can try?.",
+            "hasAudio": true
+        },
+        {
+            "id": "para-1775848998225-55",
+            "text": "\ud83e\udd17 God sends people to refresh us.",
+            "hasAudio": true
+        },
+        {
+            "id": "para-1775848998225-56",
+            "text": "Second Timothy 1. verse 16, Voice.",
+            "hasAudio": true
+        },
+        {
+            "id": "para-1775848998225-57",
+            "text": "\u2026 May the Lord show mercy to his house because he has often stopped by to refresh my weary soul.",
+            "hasAudio": true
+        },
+        {
+            "id": "para-1775848998225-58",
+            "text": "Philemon 1. verse 20, The Living Bible..",
+            "hasAudio": true
+        },
+        {
+            "id": "para-1775848998225-59",
+            "text": "Yes, dear brother, give me joy with this loving act and my weary heart will praise the Lord.",
+            "hasAudio": true
+        },
+        {
+            "id": "para-1775848998225-60",
+            "text": "God puts people in our lives to bring us what we need. We must not let our fatigue isolate us because friendship brings us joy, peace, and much-needed refreshment.",
+            "hasAudio": true
+        },
+        {
+            "id": "para-1775848998225-61",
+            "text": "\ud83e\udd14 Reflect,  Who has God put in your life that you can reach out to today for refreshment?.",
+            "hasAudio": true
+        },
+        {
+            "id": "para-1775848998225-62",
+            "text": "\ud83d\udcd6 More scriptures on getting a second wind.",
+            "hasAudio": true
+        },
+        {
+            "id": "para-1775848998225-63",
+            "text": "\ud83d\udc40 Fix your eyes on Jesus\u2014he gives you the path through fatigue.",
+            "hasAudio": true
+        },
+        {
+            "id": "para-1775848998225-64",
+            "text": "Hebrews 12. verse 3, Amplified Bible Classic..",
+            "hasAudio": true
+        },
+        {
+            "id": "para-1775848998225-65",
+            "text": "Just think of Him Who endured\u2026so that you may not grow weary or exhausted, losing heart and relaxing and fainting in your minds.",
+            "hasAudio": true
+        },
+        {
+            "id": "para-1775848998225-66",
+            "text": "\ud83c\udf1f Don\u2019t give up \u2014 faithful endurance matters.",
+            "hasAudio": true
+        },
+        {
+            "id": "para-1775848998225-67",
+            "text": "Revelation 2. verse 3, Amplified Bible..",
+            "hasAudio": true
+        },
+        {
+            "id": "para-1775848998225-68",
+            "text": "\u2026 and ,I know that, you ,who believe, are enduring patiently and are bearing up for My name\u2019s sake, and that you have not grown weary ,of being faithful to the truth,.",
+            "hasAudio": true
+        },
+        {
+            "id": "para-1775848998225-69",
+            "text": "\ud83d\udca8 Call to action,  Finding our second wind.",
+            "hasAudio": true
+        },
+        {
+            "id": "para-1775848998225-70",
+            "text": "Take one intentional step this week to let God meet you in your weariness. It doesn\u2019t need to be dramatic\u2014just real.",
+            "hasAudio": true
+        },
+        {
+            "id": "para-1775848998225-71",
+            "text": "Be still \u2014 Set aside five quiet minutes to breathe and rest in his presence. Meditate on a single verse of the Bible. Let God\u2019s Word be your quiet place of rest.",
+            "hasAudio": true
+        },
+        {
+            "id": "para-1775848998225-72",
+            "text": "Be honest \u2014 Share your weariness with a trusted spiritual friend or mentor.",
+            "hasAudio": true
+        },
+        {
+            "id": "para-1775848998225-73",
+            "text": "Be rooted \u2014 Revisit one Scripture from this lesson and pray through it daily.",
+            "hasAudio": true
+        },
+        {
+            "id": "para-1775848998225-74",
+            "text": "Be mindful \u2014 Notice one place where God has already refreshed you.",
+            "hasAudio": true
+        },
+        {
+            "id": "para-1775848998225-75",
+            "text": "Be thankful \u2014 Start a gratitude journal. Small thanks build strong faith.",
+            "hasAudio": true
+        },
+        {
+            "id": "para-1775848998225-76",
+            "text": "\ud83d\ude4f Closing reflection.",
+            "hasAudio": true
+        },
+        {
+            "id": "para-1775848998225-77",
+            "text": "God is not asking us to be less weary. He is inviting us to bring our weariness to him. Our second wind rarely arrives in a rush. It comes as we keep showing up, keep praying, and keep letting God carry what we were never meant to hold alone.",
+            "hasAudio": true
+        },
+        {
+            "id": "para-1775848998225-78",
+            "text": "Humor break.",
+            "hasAudio": true
+        },
+        {
+            "id": "para-1775848998225-79",
+            "text": "Why can\u2019t the wind tell jokes?.",
+            "hasAudio": true
+        },
+        {
+            "id": "para-1775848998225-80",
+            "text": "Because it always blows the punchline.",
+            "hasAudio": true
+        },
+        {
+            "id": "para-1775848998225-81",
+            "text": "Bring the inspiration with you.",
+            "hasAudio": true
+        },
+        {
+            "id": "para-1775848998225-82",
+            "text": "Save this phone wallpaper to help you get refreshment from God today!.",
+            "hasAudio": true
+        }
+    ],
+    "rawText": "Finding Your Second Wind\nHow God refreshes us in times of exhaustion\n\nTime: 7-10 minutes\nFocus: Fatigue, Strength, Refreshment\nScriptures: 2 Corinthians 5:2, 2 Corinthians 11:26, Galatians 6:9, Colossians 4:2, 2 Thessalonians 3:13, Psalm 119:28, Psalm 119:82, Psalm 119:123, Matthew 11:28, Proverbs 25:25, Matthew 9:36, Matthew 11:29, John 4:6, 2 Timothy 1:16, Philemon 1:20, Hebrews 12:3, Revelation 2:3\n\n\ud83e\uddd8 Settle in\nTake a deep breath. Turn off notifications on your phone. Ask God to quiet your heart and open your eyes to what he wants to show you today. \n\n\ud83d\udcad Thought starter \nWeariness shows up everywhere in Scripture\u2014from psalmists\u2019 tears to Jesus resting at a well. The Bible does not rebuke or shame tired people; instead, it reveals a God who moves toward them with compassion, rest, and renewal.\n\nWe will grow weary physically, mentally, and spiritually at times\u2014but God encourages us and helps us to keep pressing on.\n\nHere\u2019s what we\u2019ll learn in this Quick Quiet Time:\nPrayer keeps us refreshed in our moments of greatest exhaustion.\nGod wants honesty from us, not perfection.\nEven Jesus got weary, and he can give us the way to our second wind.\n\n\ud83d\ude4f Don\u2019t drop prayer.\n2 Corinthians 5:2 TLB\nHow weary we grow of our present bodies. That is why we look forward eagerly to the day when we shall have heavenly bodies that we shall put on like new clothes.\n\n2 Corinthians 11:26 TLB\nI have traveled many weary miles and have been often in great danger from flooded rivers and from robbers and from my own people\u2026\n\nGalatians 6:9 AMPC\nAnd let us not lose heart and grow weary and faint in acting nobly and doing right, for in due time and at the appointed season we shall reap, if we do not loosen and relax our courage and faint.\n\nColossians 4:2 TLB\nDon't be weary in prayer; keep at it; watch for God's answers, and remember to be thankful when they come.\n\n2 Thessalonians 3:13 AMPC\nAnd as for you, brethren, do not become weary or lose heart in doing right [but continue in well-doing without weakening].\n\nWeariness is a normal part of a faithful life. Even the most committed leaders\u2014like Paul\u2014walked through long, exhausting seasons. \n\nPaul\u2019s life proves that weariness does not mean we are outside of God\u2019s will. It\u2019s just an opportunity to come closer to him.\n\n\u27a1\ufe0f The point: We all have weary seasons, but we should never let them stop us from praying. Paul was often weary, but got his strength from prayer.\n\n\ud83e\udd71 Be honest about weariness before God.\nPsalm 119:28 CSB\nI am weary from grief; strengthen me through your word.\n\nPsalm 119:82 CSB\nMy eyes grow weary looking for what you have promised; I ask, \"When will you comfort me?\"\n\nPsalm 119:123 CEV\nMy eyes are weary from waiting to see you keep your promise to come and save me.\n\nThe psalmist didn\u2019t hide his exhaustion. He was honest with God about what was wearing him out and what it made him feel, and asked God to help him.\n\n\ud83d\udca5 Try it: Take a moment to name your own weariness to God.\n\n\ud83d\udca7 God brings refreshment.\nMatthew 11:28 TPT\n\u201cAre you weary, carrying a heavy burden? Come to me. I will refresh your life, for I am your oasis.\u201d\n\nProverbs 25:25 BSB\nLike cold water to a weary soul is good news from a distant land.\n\nGod\u2019s presence refreshes; he doesn\u2019t pressure. He can be the place we turn to when we need rest.\n\n\ud83e\udd14 Reflect: Where have you felt even a small sip of refreshment lately?\n\n\u2764\ufe0f Jesus sees our weariness.\nMatthew 9:36 NKJV\nBut when He saw the multitudes, He was moved with compassion for them, because they were weary and scattered, like sheep having no shepherd.\n\nMatthew 11:29 Voice\nPut My yoke upon your shoulders-it might appear heavy at first, but it is perfectly fitted to your curves. Learn from Me, for I am gentle and humble of heart. When you are yoked to Me, your weary souls will find rest.\n\nJesus notices weary people and is moved with compassion for them. He wants us to come to him with our needs and feelings, and won\u2019t judge us for having them. \n\n\ud83d\udd4a\ufe0f Even Jesus was weary.\nJohn 4:6 BSB\nSince Jacob\u2019s well was there, Jesus, weary from His journey, sat down by the well. It was about the sixth hour.\n\nOur fatigue doesn\u2019t disqualify us from God\u2019s purpose. It makes us more like Jesus.\n\n\ud83e\udd14 Reflect: How can you learn from how Jesus handled his weariness? What\u2019s one thing he did that you can try?\n\n\ud83e\udd17 God sends people to refresh us.\n2 Timothy 1:16 Voice\n\u2026 May the Lord show mercy to his house because he has often stopped by to refresh my weary soul.\n\nPhilemon 1:20 TLB\nYes, dear brother, give me joy with this loving act and my weary heart will praise the Lord.\n\nGod puts people in our lives to bring us what we need. We must not let our fatigue isolate us because friendship brings us joy, peace, and much-needed refreshment.\n\n\ud83e\udd14 Reflect: Who has God put in your life that you can reach out to today for refreshment?\n\n\ud83d\udcd6 More scriptures on getting a second wind\n\ud83d\udc40 Fix your eyes on Jesus\u2014he gives you the path through fatigue.\nHebrews 12:3 AMPC\nJust think of Him Who endured\u2026so that you may not grow weary or exhausted, losing heart and relaxing and fainting in your minds.\n\n\ud83c\udf1f Don\u2019t give up \u2014 faithful endurance matters.\nRevelation 2:3 AMP\n\u2026 and [I know that] you [who believe] are enduring patiently and are bearing up for My name\u2019s sake, and that you have not grown weary [of being faithful to the truth].\n\n\ud83d\udca8 Call to action: Finding our second wind\nTake one intentional step this week to let God meet you in your weariness. It doesn\u2019t need to be dramatic\u2014just real.\n\nBe still \u2014 Set aside five quiet minutes to breathe and rest in his presence. Meditate on a single verse of the Bible. Let God\u2019s Word be your quiet place of rest.\nBe honest \u2014 Share your weariness with a trusted spiritual friend or mentor.\nBe rooted \u2014 Revisit one Scripture from this lesson and pray through it daily.\nBe mindful \u2014 Notice one place where God has already refreshed you.\nBe thankful \u2014 Start a gratitude journal. Small thanks build strong faith.\n\n\ud83d\ude4f Closing reflection\nGod is not asking us to be less weary. He is inviting us to bring our weariness to him. Our second wind rarely arrives in a rush. It comes as we keep showing up, keep praying, and keep letting God carry what we were never meant to hold alone.\n\nHumor break\nWhy can\u2019t the wind tell jokes?\nBecause it always blows the punchline. \n\nBring the inspiration with you\nSave this phone wallpaper to help you get refreshment from God today! \n\n\n  \n"
+}
