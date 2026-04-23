@@ -6,3 +6,6 @@ __pycache__/
 .DS_Store
 *.wav
 !static/builtin/default_voice.wav
+.claude/
+data/projects/
+data/settings.json
