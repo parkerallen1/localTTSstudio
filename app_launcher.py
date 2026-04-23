@@ -8,16 +8,56 @@ import webbrowser
 import signal
 import sys
 import socket
+import platform
+import traceback
+from datetime import datetime, timezone
 
 # Redirect stdout/stderr to a log file so we can debug the frozen app
 if getattr(sys, 'frozen', False):
+    os.environ["PYTHONUNBUFFERED"] = "1"
     _log_path = os.path.expanduser("~/.qwen_tts_studio/app.log")
     os.makedirs(os.path.dirname(_log_path), exist_ok=True)
-    _log_file = open(_log_path, "w")
+    # Rotate: move existing app.log -> app.log.1 before opening a fresh log
+    _log_path_1 = _log_path + ".1"
+    if os.path.exists(_log_path):
+        # Atomically replace .log.1 (if it exists) with the current .log
+        os.replace(_log_path, _log_path_1)
+    _log_file = open(_log_path, mode="w", buffering=1, encoding="utf-8")
     sys.stdout = _log_file
     sys.stderr = _log_file
+    # Print startup banner
+    _now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    _mac_ver = platform.mac_ver()[0] or "unknown"
+    print("================================================================")
+    print("[LAUNCHER] Local TTS Studio starting")
+    print(f"[LAUNCHER] Time: {_now}")
+    print(f"[LAUNCHER] Platform: {platform.system()} {platform.release()} {platform.machine()} (macOS {_mac_ver})")
+    print(f"[LAUNCHER] Python: {sys.version.split()[0]}")
+    print(f"[LAUNCHER] Executable: {sys.executable}")
+    print(f"[LAUNCHER] PID: {os.getpid()}")
+    print("================================================================")
+    sys.stdout.flush()
 import subprocess
 import tempfile
+
+
+def _start_heartbeat():
+    """Spawn a daemon thread that logs a heartbeat every 30 seconds."""
+    _start_time = time.monotonic()
+    _pid = os.getpid()
+
+    def _beat():
+        while True:
+            time.sleep(30)
+            elapsed = int(time.monotonic() - _start_time)
+            print(f"[LAUNCHER] [HEARTBEAT] t+{elapsed}s pid={_pid}")
+            sys.stdout.flush()
+
+    _t = threading.Thread(target=_beat, daemon=True, name="launcher-heartbeat")
+    _t.start()
+
+
+_start_heartbeat()
 
 PORT = 8001
 URL = f"http://127.0.0.1:{PORT}"
@@ -147,13 +187,26 @@ def write_loading_page():
 
 def run_server():
     """Import the heavy app module here (not at top-level) so the browser opens first."""
-    import uvicorn
-    from main import app
-    uvicorn.run(app, host="127.0.0.1", port=PORT)
+    try:
+        print("[LAUNCHER] Importing main module (this triggers torch/transformers — can take 5–20s on first run)")
+        sys.stdout.flush()
+        from main import app
+        print("[LAUNCHER] main module imported; starting uvicorn on 127.0.0.1:{PORT}".format(PORT=PORT))
+        sys.stdout.flush()
+        import uvicorn
+        print("[LAUNCHER] uvicorn imported")
+        sys.stdout.flush()
+        uvicorn.run(app, host="127.0.0.1", port=PORT)
+    except Exception:
+        print("[LAUNCHER] run_server raised an exception:")
+        sys.stdout.flush()
+        traceback.print_exc()
+        sys.stdout.flush()
 
 
 def signal_handler(sig, frame):
-    print("\nShutting down Local TTS Studio...")
+    print("\n[LAUNCHER] Shutting down Local TTS Studio (signal)...")
+    sys.stdout.flush()
     sys.exit(0)
 
 
@@ -173,7 +226,8 @@ if __name__ == '__main__':
 
     # Kill any stale server left over from a previous run
     if port_in_use():
-        print(f"Port {PORT} already in use — clearing stale process...")
+        print(f"[LAUNCHER] Port {PORT} already in use — clearing stale process...")
+        sys.stdout.flush()
         kill_stale_server()
         for _ in range(10):
             if not port_in_use():
@@ -183,7 +237,8 @@ if __name__ == '__main__':
     # Show loading page in browser IMMEDIATELY (before heavy imports)
     loading_page = write_loading_page()
     webbrowser.open(f"file://{loading_page}")
-    print("Loading page opened — starting server in background...")
+    print(f"[LAUNCHER] Loading page opened at file://{loading_page}, starting uvicorn in background thread")
+    sys.stdout.flush()
 
     # Start the server (heavy imports happen inside the thread)
     t = threading.Thread(target=run_server, daemon=True)
@@ -202,7 +257,8 @@ if __name__ == '__main__':
         lbl.pack(expand=True)
 
         def on_closing():
-            print("\nShutting down Local TTS Studio...")
+            print("\n[LAUNCHER] Shutting down Local TTS Studio (window closed)...")
+            sys.stdout.flush()
             if loading_page:
                 try:
                     os.unlink(loading_page)
@@ -231,7 +287,8 @@ if __name__ == '__main__':
         root.mainloop()
 
     except Exception as e:
-        print(f"GUI failed to start, falling back to sleep loop: {e}")
+        print(f"[LAUNCHER] GUI failed to start, falling back to sleep loop: {e}")
+        sys.stdout.flush()
         try:
             while True:
                 time.sleep(1)
@@ -243,7 +300,8 @@ if __name__ == '__main__':
                         pass
                     loading_page = None
         except (KeyboardInterrupt, SystemExit):
-            print("\nShutting down Local TTS Studio...")
+            print("\n[LAUNCHER] Shutting down Local TTS Studio (sleep loop exit)...")
+            sys.stdout.flush()
             if loading_page:
                 try:
                     os.unlink(loading_page)

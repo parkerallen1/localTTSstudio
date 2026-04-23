@@ -699,7 +699,7 @@ button:focus-visible {
     position: fixed;
     bottom: 1.5rem;
     right: 1.5rem;
-    width: 320px;
+    width: 420px;
     height: 200px;
     background: rgba(10, 14, 20, 0.88);
     border: 1px solid rgba(88, 166, 255, 0.15);
@@ -810,6 +810,28 @@ button:focus-visible {
 
 .log-entry.error .log-msg {
     color: #fc8181;
+}
+
+/* Log source badges */
+.log-source {
+    font-size: 0.55rem;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    padding: 0.08rem 0.3rem;
+    border-radius: 3px;
+    flex-shrink: 0;
+    text-transform: uppercase;
+    line-height: 1.4;
+}
+
+.log-source-client {
+    background: rgba(88, 166, 255, 0.12);
+    color: rgba(88, 166, 255, 0.7);
+}
+
+.log-source-server {
+    background: rgba(163, 113, 247, 0.12);
+    color: rgba(163, 113, 247, 0.7);
 }
 
 /* ─── Project Bar ─────────────────────────────────────────────────────────── */
@@ -927,4 +949,234 @@ button:focus-visible {
 .danger-btn:hover {
     background: rgba(248, 81, 73, 0.1) !important;
     border-color: rgba(248, 81, 73, 0.5) !important;
+}
+
+/* ─── Header Badges Row ─── */
+.header-badges {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-top: 6px;
+}
+
+/* ─── Download Progress Banner ─── */
+.download-progress-banner {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    z-index: 2000;
+    background: linear-gradient(90deg, #1a4a7a 0%, #1a3a5c 100%);
+    border-bottom: 2px solid #63b3ed;
+    color: #e0f0ff;
+    font-size: 0.95rem;
+    font-weight: 600;
+    padding: 0.6rem 1.5rem;
+    text-align: center;
+    letter-spacing: 0.02em;
+    box-shadow: 0 2px 16px rgba(0, 100, 200, 0.4);
+    transition: opacity 0.4s ease;
+    pointer-events: none;
+}
+
+.download-progress-banner.hidden {
+    display: none !important;
+}
+
+.download-progress-banner.fading-out {
+    opacity: 0;
+}
+
+/* ─── Activity Log Drawer ─── */
+.log-header-actions {
+    display: flex;
+    gap: 4px;
+    align-items: center;
+}
+
+/* ─── Settings Modal ─── */
+.settings-modal-content {
+    max-width: 620px;
+    width: 95%;
+    max-height: 85vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.settings-tabs {
+    display: flex;
+    gap: 0;
+    border-bottom: 1px solid var(--glass-border);
+    margin-bottom: 0;
+    flex-shrink: 0;
+}
+
+.settings-tab {
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    border-radius: 0;
+    color: var(--text-muted);
+    font-size: 0.9rem;
+    font-weight: 600;
+    padding: 0.6rem 1.2rem;
+    cursor: pointer;
+    transition: color 0.15s, border-color 0.15s;
+    margin-bottom: -1px;
+}
+
+.settings-tab:hover {
+    color: var(--text-main);
+}
+
+.settings-tab.active {
+    color: var(--primary);
+    border-bottom-color: var(--primary);
+}
+
+.settings-tab-panel {
+    display: none;
+    overflow-y: auto;
+    flex: 1;
+    padding-top: 1rem;
+}
+
+.settings-tab-panel.active {
+    display: flex;
+    flex-direction: column;
+}
+
+.settings-tab-panel > .modal-body {
+    flex: 1;
+}
+
+.settings-save-msg {
+    font-size: 0.85rem;
+    text-align: center;
+    padding: 4px 0;
+}
+
+.settings-save-msg.ok {
+    color: #68d391;
+}
+
+.settings-save-msg.error {
+    color: #fc8181;
+}
+
+/* ─── Models Table ─── */
+.models-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.85rem;
+}
+
+.models-table th {
+    text-align: left;
+    color: var(--text-muted);
+    font-weight: 600;
+    font-size: 0.75rem;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    padding: 6px 8px;
+    border-bottom: 1px solid var(--glass-border);
+}
+
+.models-table td {
+    padding: 8px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+    vertical-align: middle;
+}
+
+.models-table tr:last-child td {
+    border-bottom: none;
+}
+
+.model-loaded-badge {
+    display: inline-block;
+    background: rgba(88, 166, 255, 0.18);
+    color: var(--primary);
+    font-size: 0.65rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    padding: 2px 6px;
+    border-radius: 4px;
+    margin-left: 6px;
+    vertical-align: middle;
+}
+
+.model-cached-yes {
+    color: #68d391;
+    font-weight: 700;
+}
+
+.model-cached-no {
+    color: var(--text-muted);
+}
+
+.model-action-btn {
+    padding: 0.3rem 0.7rem;
+    font-size: 0.78rem;
+}
+
+.model-dl-progress {
+    font-size: 0.78rem;
+    color: #63b3ed;
+    font-style: italic;
+}
+
+/* ─── Diagnostics Panel ─── */
+.diag-health-rows {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-bottom: 14px;
+}
+
+.diag-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 0.85rem;
+    padding: 6px 10px;
+    background: rgba(255, 255, 255, 0.03);
+    border-radius: 6px;
+    border: 1px solid var(--glass-border);
+}
+
+.diag-row-label {
+    color: var(--text-muted);
+    font-weight: 500;
+}
+
+.diag-row-value {
+    color: var(--text-main);
+    font-weight: 600;
+}
+
+.diag-row-value.ok {
+    color: #68d391;
+}
+
+.diag-row-value.error {
+    color: #fc8181;
+}
+
+.diag-json-pre {
+    background: rgba(0, 0, 0, 0.3);
+    border: 1px solid var(--glass-border);
+    border-radius: 6px;
+    padding: 10px 14px;
+    font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    overflow-x: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 280px;
+    overflow-y: auto;
 }

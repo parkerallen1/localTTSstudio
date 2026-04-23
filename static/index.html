@@ -14,6 +14,11 @@
         <div class="glow glow-2"></div>
     </div>
 
+    <!-- ─── Download Progress Banner ─── -->
+    <div id="download-progress-banner" class="download-progress-banner hidden">
+        <span id="download-progress-text">Downloading model…</span>
+    </div>
+
     <div class="container">
         <header>
             <div class="header-top">
@@ -31,7 +36,11 @@
                 </h1>
             </div>
             <p class="subtitle">Local text-to-speech, runs entirely on your machine.</p>
-            <span class="global-status-badge idle" id="global-status-badge">Model Status: Idle</span>
+            <div class="header-badges">
+                <span class="global-status-badge idle" id="global-status-badge">Model Status: Idle</span>
+                <button id="btn-open-settings" class="secondary-btn small-btn" title="Settings &amp; Diagnostics">&#9881; Settings</button>
+                <button id="btn-toggle-log" class="secondary-btn small-btn" title="Toggle Activity Log">Logs</button>
+            </div>
         </header>
 
         <div id="update-banner" class="update-banner hidden">
@@ -50,7 +59,7 @@
 
         <main>
             <section class="settings-panel glass">
-                <h2>Settings</h2>
+                <h2>Voice</h2>
                 <div class="settings-grid">
                     <div class="setting-item">
                         <label for="model-type-select">Mode</label>
@@ -187,13 +196,85 @@
         </div>
     </div>
 
-    <!-- Activity Log -->
+    <!-- ─── Activity Log Drawer ─── -->
     <div id="activity-log" class="activity-log">
         <div class="activity-log-header">
             <span>Activity Log</span>
-            <button id="btn-minimize-log" class="log-clear-btn" title="Minimize">&#8722;</button>
+            <div class="log-header-actions">
+                <button id="btn-copy-log" class="log-clear-btn" title="Copy all entries to clipboard">Copy</button>
+                <button id="btn-clear-log" class="log-clear-btn" title="Clear log view">Clear</button>
+                <button id="btn-minimize-log" class="log-clear-btn" title="Minimize">&#8722;</button>
+            </div>
         </div>
         <div id="activity-log-entries" class="activity-log-entries"></div>
+    </div>
+
+    <!-- ─── Settings / Diagnostics Modal ─── -->
+    <div id="settings-modal" class="modal hidden">
+        <div class="modal-content glass settings-modal-content">
+            <div class="modal-header">
+                <h2>&#9881; Settings &amp; Diagnostics</h2>
+                <button id="btn-close-settings-modal" class="close-btn">&times;</button>
+            </div>
+            <!-- Tab bar -->
+            <div class="settings-tabs">
+                <button class="settings-tab active" data-tab="defaults">Defaults</button>
+                <button class="settings-tab" data-tab="models">Models</button>
+                <button class="settings-tab" data-tab="diagnostics">Diagnostics</button>
+            </div>
+
+            <!-- Tab: Defaults -->
+            <div class="settings-tab-panel active" id="settings-tab-defaults">
+                <div class="modal-body">
+                    <div class="setting-item wide-setting">
+                        <label for="pref-model-size">Preferred Model Size</label>
+                        <select id="pref-model-size">
+                            <option value="0.6B">0.6B (Faster, Less VRAM)</option>
+                            <option value="1.7B">1.7B (Better Quality)</option>
+                        </select>
+                    </div>
+                    <div class="setting-item wide-setting">
+                        <label for="pref-model-type">Preferred Model Type</label>
+                        <select id="pref-model-type">
+                            <option value="Base">Base (Voice Cloning)</option>
+                            <option value="CustomVoice">CustomVoice (Preprogrammed)</option>
+                            <option value="VoiceDesign">VoiceDesign</option>
+                        </select>
+                    </div>
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="pref-auto-preload">
+                        Auto-preload preferred model at startup
+                    </label>
+                    <button id="btn-save-settings" class="primary-btn" style="width:100%;margin-top:8px;">Save</button>
+                    <p id="settings-save-msg" class="settings-save-msg hidden"></p>
+                </div>
+            </div>
+
+            <!-- Tab: Models -->
+            <div class="settings-tab-panel" id="settings-tab-models">
+                <div class="modal-body">
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+                        <span style="font-size:0.85rem;color:var(--text-muted);">Model cache on disk</span>
+                        <button id="btn-refresh-models" class="secondary-btn small-btn">&#8635; Refresh</button>
+                    </div>
+                    <div id="models-table-wrap">
+                        <p class="hint">Loading…</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Tab: Diagnostics -->
+            <div class="settings-tab-panel" id="settings-tab-diagnostics">
+                <div class="modal-body">
+                    <div style="display:flex;gap:8px;margin-bottom:12px;">
+                        <button id="btn-refresh-diag" class="secondary-btn small-btn">&#8635; Refresh</button>
+                        <button id="btn-copy-diag" class="secondary-btn small-btn">Copy JSON</button>
+                    </div>
+                    <div id="diag-health-rows" class="diag-health-rows"></div>
+                    <pre id="diag-json-pre" class="diag-json-pre">Loading…</pre>
+                </div>
+            </div>
+        </div>
     </div>
 
     <script src="/static/script.js"></script>

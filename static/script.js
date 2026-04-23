@@ -39,12 +39,18 @@ document.addEventListener('DOMContentLoaded', () => {
     const projectsListEl = document.getElementById('projects-list');
     const noProjectsMsg = document.getElementById('no-projects-msg');
 
-    // --- Activity Log ---
+    // ─── Activity Log Drawer ───────────────────────────────────────────────────
     const logEntries = document.getElementById('activity-log-entries');
     const btnMinimizeLog = document.getElementById('btn-minimize-log');
+    const btnCopyLog = document.getElementById('btn-copy-log');
+    const btnClearLog = document.getElementById('btn-clear-log');
+    const btnToggleLog = document.getElementById('btn-toggle-log');
+    const activityLogEl = document.getElementById('activity-log');
     let logMinimized = false;
+    // Stores plain-text versions of all entries for clipboard copying
+    const logPlainLines = [];
 
-    function log(msg, level = 'info') {
+    function log(msg, level = 'info', source = 'client') {
         const entry = document.createElement('div');
         entry.className = `log-entry ${level}`;
         const now = new Date();
@@ -52,21 +58,77 @@ document.addEventListener('DOMContentLoaded', () => {
         const timeSpan = document.createElement('span');
         timeSpan.className = 'log-time';
         timeSpan.textContent = time;
+        const srcBadge = document.createElement('span');
+        srcBadge.className = `log-source log-source-${source}`;
+        srcBadge.textContent = source === 'server' ? 'SRV' : 'UI';
         const msgSpan = document.createElement('span');
         msgSpan.className = 'log-msg';
         msgSpan.textContent = msg;
         entry.appendChild(timeSpan);
+        entry.appendChild(srcBadge);
         entry.appendChild(msgSpan);
         logEntries.appendChild(entry);
-        logEntries.scrollTop = logEntries.scrollHeight;
+
+        // Store plain-text line for "Copy all"
+        logPlainLines.push(`${time} [${level.toUpperCase()}] ${msg}`);
+
+        // Auto-scroll unless user has scrolled up
+        const atBottom = logEntries.scrollHeight - logEntries.scrollTop - logEntries.clientHeight < 40;
+        if (atBottom) logEntries.scrollTop = logEntries.scrollHeight;
     }
 
     btnMinimizeLog.addEventListener('click', () => {
         logMinimized = !logMinimized;
         logEntries.style.display = logMinimized ? 'none' : '';
         btnMinimizeLog.textContent = logMinimized ? '+' : '−';
-        document.getElementById('activity-log').style.height = logMinimized ? 'auto' : '';
+        activityLogEl.style.height = logMinimized ? 'auto' : '';
     });
+
+    // "Logs" toggle button in header
+    btnToggleLog.addEventListener('click', () => {
+        const hidden = activityLogEl.style.display === 'none';
+        activityLogEl.style.display = hidden ? '' : 'none';
+        btnToggleLog.textContent = hidden ? 'Hide Logs' : 'Logs';
+    });
+
+    btnCopyLog.addEventListener('click', () => {
+        const text = logPlainLines.join('\n');
+        navigator.clipboard.writeText(text).then(() => {
+            const orig = btnCopyLog.textContent;
+            btnCopyLog.textContent = 'Copied!';
+            setTimeout(() => { btnCopyLog.textContent = orig; }, 1500);
+        }).catch(() => {
+            // Fallback for older browsers
+            const ta = document.createElement('textarea');
+            ta.value = text;
+            ta.style.position = 'fixed';
+            ta.style.opacity = '0';
+            document.body.appendChild(ta);
+            ta.select();
+            document.execCommand('copy');
+            document.body.removeChild(ta);
+        });
+    });
+
+    btnClearLog.addEventListener('click', () => {
+        logEntries.innerHTML = '';
+        logPlainLines.length = 0;
+    });
+
+    // --- Server Activity Log SSE ---
+    // The handler pushes entries directly into the Activity Log drawer above.
+    (function connectActivityLog() {
+        const src = new EventSource('/api/activity_log');
+        src.onmessage = (event) => {
+            try {
+                const entries = JSON.parse(event.data);
+                entries.forEach(e => log(e.msg, e.level || 'info', 'server'));
+            } catch (_) { /* ignored */ }
+        };
+        src.onerror = () => {
+            // Reconnect silently — EventSource handles reconnections automatically
+        };
+    })();
 
     log('Studio ready.', 'ok');
 
@@ -437,7 +499,10 @@ const bibleCheckbox = document.getElementById('bible-text-mode');
         // Escape — close any open modal
         if (e.key === 'Escape') {
             const saveProfileModal = document.getElementById('save-profile-modal');
-            if (projectsModal && !projectsModal.classList.contains('hidden')) {
+            const settingsModal = document.getElementById('settings-modal');
+            if (settingsModal && !settingsModal.classList.contains('hidden')) {
+                settingsModal.classList.add('hidden');
+            } else if (projectsModal && !projectsModal.classList.contains('hidden')) {
                 projectsModal.classList.add('hidden');
             } else if (saveProfileModal && !saveProfileModal.classList.contains('hidden')) {
                 saveProfileModal.classList.add('hidden');
@@ -630,12 +695,37 @@ const bibleCheckbox = document.getElementById('bible-text-mode');
         para.audioBlob = null;
         para.audioUrl = null;
         updateCardUi(index);
-        log(`Generating para ${index + 1}...`);
+
+        const textPreview = para.text.length > 60 ? para.text.substring(0, 60) + '...' : para.text;
+        const mode = modelTypeSelect.value;
+        const size = modelSizeSelect ? modelSizeSelect.value : '1.7B';
+        log(`[${index + 1}/${paragraphsData.length}] Generating — mode=${mode}, size=${size}`);
+        log(`[${index + 1}] Text: "${textPreview}"`);
+        const genStartTime = performance.now();
 
         // Track active generations so the stop button appears for single-para too
         activeGenerationCount++;
         if (activeGenerationCount === 1) setGeneratingState(true);
         activeAbortController = new AbortController();
+
+        // ─── Generation fetch with 30-min timeout + download-% heartbeat ────────
+        // We use a manual timeout timer (compatible with all browsers) rather than
+        // AbortSignal.timeout() to merge cleanly with the existing abortController.
+        let timeoutTimer = null;
+        const TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
+        timeoutTimer = setTimeout(() => {
+            if (activeAbortController) activeAbortController.abort('timeout');
+        }, TIMEOUT_MS);
+
+        // Heartbeat: every 2 s while generation is pending, read the shared
+        // progressState (fed by the always-open /api/progress EventSource below)
+        // and reflect any download % in the paragraph's status badge.
+        const heartbeatInterval = setInterval(() => {
+            if (progressState.status === 'downloading') {
+                const badge = document.getElementById(`status-${para.id}`);
+                if (badge) badge.textContent = `Downloading… ${progressState.pct}%`;
+            }
+        }, 2000);
 
         try {
             const formData = new FormData();
@@ -659,9 +749,11 @@ const bibleCheckbox = document.getElementById('bible-text-mode');
             });
 
             if (!response.ok) {
-                throw new Error('API returned ' + response.status);
+                const errText = await response.text().catch(() => '');
+                throw new Error(`API returned ${response.status}: ${errText.substring(0, 120)}`);
             }
 
+            log(`[${index + 1}] Server responded OK — downloading audio blob...`);
             const blob = await response.blob();
             para.audioBlob = blob;
 
@@ -669,20 +761,33 @@ const bibleCheckbox = document.getElementById('bible-text-mode');
 
             para.audioUrl = URL.createObjectURL(blob);
             para.status = 'done';
-            log(`Para ${index + 1} ready.`, 'ok');
+            const genElapsed = ((performance.now() - genStartTime) / 1000).toFixed(1);
+            const blobKB = (blob.size / 1024).toFixed(0);
+            log(`[${index + 1}] Done — ${genElapsed}s round-trip, ${blobKB} KB`, 'ok');
 
             // Auto-save audio and project metadata
             autoSaveParagraphAudio(index, blob).catch(e => console.warn('Auto-save failed:', e));
 
         } catch (error) {
-            if (error.name === 'AbortError') {
-                para.status = 'idle';
+            const genElapsed = ((performance.now() - genStartTime) / 1000).toFixed(1);
+            if (error.name === 'AbortError' || error === 'timeout') {
+                const isTimeout = error === 'timeout' ||
+                    (activeAbortController && activeAbortController.signal.reason === 'timeout');
+                para.status = 'error';
+                if (isTimeout) {
+                    log(`[${index + 1}] Generation timed out after 30 min — check Activity Log and ~/.qwen_tts_studio/app.log`, 'error');
+                } else {
+                    para.status = 'idle';
+                    log(`[${index + 1}] Generation aborted by user after ${genElapsed}s`, 'warn');
+                }
             } else {
                 console.error('Generation failed:', error);
                 para.status = 'error';
-                log(`Para ${index + 1} failed.`, 'error');
+                log(`[${index + 1}] FAILED after ${genElapsed}s — ${error.message}`, 'error');
             }
         } finally {
+            clearTimeout(timeoutTimer);
+            clearInterval(heartbeatInterval);
             activeAbortController = null;
             activeGenerationCount--;
             if (activeGenerationCount === 0) setGeneratingState(false);
@@ -719,9 +824,17 @@ const bibleCheckbox = document.getElementById('bible-text-mode');
     }
 
     btnGenerateAll.addEventListener('click', async () => {
-        log(`Generating remaining paragraph(s)...`);
+        const remaining = paragraphsData.filter(p => p.status !== 'done').length;
+        const total = paragraphsData.length;
+        log(`Batch generation starting — ${remaining} of ${total} paragraph(s) remaining`);
         await runGenerationPool();
-        if (!generationStopped) log('All done.', 'ok');
+        if (!generationStopped) {
+            const doneCount = paragraphsData.filter(p => p.status === 'done').length;
+            log(`Batch complete — ${doneCount}/${total} paragraphs generated successfully.`, 'ok');
+        } else {
+            const doneCount = paragraphsData.filter(p => p.status === 'done').length;
+            log(`Batch stopped by user — ${doneCount}/${total} completed.`, 'warn');
+        }
     });
 
     function updateDownloadButtonVisibility() {
@@ -861,6 +974,80 @@ const bibleCheckbox = document.getElementById('bible-text-mode');
 
     // Progress bar elements
     const globalStatusBadge = document.getElementById('global-status-badge');
+
+    // ─── Download Progress Banner ─────────────────────────────────────────────
+    const downloadBanner = document.getElementById('download-progress-banner');
+    const downloadBannerText = document.getElementById('download-progress-text');
+    let bannerFadeTimer = null;
+
+    function showDownloadBanner(description, pct) {
+        if (bannerFadeTimer) { clearTimeout(bannerFadeTimer); bannerFadeTimer = null; }
+        downloadBanner.classList.remove('hidden', 'fading-out');
+        const pctStr = pct != null ? ` — ${pct}%` : '';
+        downloadBannerText.textContent = `Downloading model — ${description}${pctStr}`;
+    }
+
+    function hideDownloadBanner() {
+        downloadBanner.classList.add('fading-out');
+        bannerFadeTimer = setTimeout(() => {
+            downloadBanner.classList.add('hidden');
+            downloadBanner.classList.remove('fading-out');
+        }, 400);
+    }
+
+    // ─── Progress SSE (long-lived, auto-reconnects) ───────────────────────────
+    // Design rationale: we keep ONE persistent EventSource rather than opening
+    // a new one per generation. When the server closes it (e.g. after "ready"),
+    // EventSource's built-in reconnect kicks in immediately so the next model
+    // load is also covered.  The progressState object is read by the per-para
+    // heartbeat inside generateSingle().
+    const progressState = { status: 'idle', pct: 0, description: '' };
+
+    (function connectProgressSSE() {
+        const evtSource = new EventSource('/api/progress');
+        // Track the previous status so we only log/announce on real transitions
+        // (the server may re-send the same state after a reconnect).
+        let prevStatus = null;
+
+        evtSource.onmessage = (event) => {
+            try {
+                const data = JSON.parse(event.data);
+                progressState.status = data.status || 'idle';
+                progressState.pct = Math.floor(Math.max(0, Math.min(100, data.progress || 0)));
+                progressState.description = data.description || '';
+
+                const transitioned = data.status !== prevStatus;
+
+                if (data.status === 'downloading') {
+                    updateStatusBadge('downloading', `Downloading Model... ${progressState.pct}%`);
+                    showDownloadBanner(progressState.description, progressState.pct);
+                } else if (data.status === 'ready') {
+                    updateStatusBadge('ready', 'Model Ready');
+                    if (transitioned && prevStatus === 'downloading') {
+                        log('Model initialized successfully.', 'ok');
+                    }
+                    hideDownloadBanner();
+                } else if (data.status === 'error') {
+                    updateStatusBadge('error', 'Model Error');
+                    if (transitioned) {
+                        console.error('Model Error:', data.description);
+                        log(`Failed: ${data.description}`, 'error');
+                    }
+                    hideDownloadBanner();
+                } else {
+                    updateStatusBadge('idle', 'Model Status: Idle');
+                }
+
+                prevStatus = data.status;
+            } catch (e) {
+                console.error('Error parsing progress SSE:', e);
+            }
+        };
+
+        evtSource.onerror = () => {
+            // EventSource reconnects automatically; nothing to do
+        };
+    })();
 
     // --- Dynamic UI Logic ---
     function applyModelTypeConfig() {
@@ -1006,45 +1193,6 @@ const bibleCheckbox = document.getElementById('bible-text-mode');
         globalStatusBadge.textContent = textContent;
     }
 
-    // Connect to SSE for progress updates
-    const evtSource = new EventSource("/api/progress");
-    let isFinished = false;
-
-    evtSource.onmessage = (event) => {
-        if (isFinished) return;
-
-        try {
-            const data = JSON.parse(event.data);
-
-            if (data.status === 'downloading') {
-                const pct = Math.floor(Math.max(0, Math.min(100, data.progress)));
-                updateStatusBadge('downloading', `Downloading Model... ${pct}%`);
-            } else if (data.status === 'ready') {
-                isFinished = true;
-                updateStatusBadge('ready', 'Model Ready');
-                log('Model initialized successfully.', 'ok');
-                evtSource.close();
-            } else if (data.status === 'error') {
-                isFinished = true;
-                updateStatusBadge('error', 'Model Error');
-                console.error("Model Error:", data.description);
-                log(`Failed: ${data.description}`, 'error');
-                evtSource.close();
-            } else {
-                updateStatusBadge('idle', 'Model Status: Idle');
-            }
-
-        } catch (e) {
-            console.error("Error parsing progress SSE:", e);
-        }
-    };
-
-    evtSource.onerror = () => {
-        // Server closed the SSE connection — stop reconnecting
-        isFinished = true;
-        evtSource.close();
-    };
-
     // General cleanup applied to all text
     function cleanTextGeneral(text) {
         // Ending every line with a period
@@ -1121,4 +1269,260 @@ const bibleCheckbox = document.getElementById('bible-text-mode');
 
         return text;
     }
+
+    // ─── Settings & Diagnostics Modal ─────────────────────────────────────────
+
+    const settingsModal = document.getElementById('settings-modal');
+    const btnOpenSettings = document.getElementById('btn-open-settings');
+    const btnCloseSettingsModal = document.getElementById('btn-close-settings-modal');
+
+    // Tab switching
+    document.querySelectorAll('.settings-tab').forEach(tab => {
+        tab.addEventListener('click', () => {
+            document.querySelectorAll('.settings-tab').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.settings-tab-panel').forEach(p => p.classList.remove('active'));
+            tab.classList.add('active');
+            const panelId = `settings-tab-${tab.dataset.tab}`;
+            const panel = document.getElementById(panelId);
+            if (panel) panel.classList.add('active');
+            // Lazy-load content when tab is first opened
+            if (tab.dataset.tab === 'models') loadModelsTab();
+            if (tab.dataset.tab === 'diagnostics') loadDiagnosticsTab();
+        });
+    });
+
+    btnOpenSettings.addEventListener('click', () => {
+        settingsModal.classList.remove('hidden');
+        loadSettingsDefaults();
+    });
+
+    btnCloseSettingsModal.addEventListener('click', () => {
+        settingsModal.classList.add('hidden');
+    });
+
+    // Close on backdrop click
+    settingsModal.addEventListener('click', (e) => {
+        if (e.target === settingsModal) settingsModal.classList.add('hidden');
+    });
+
+    // ─── Settings: Defaults tab ───────────────────────────────────────────────
+
+    async function loadSettingsDefaults() {
+        try {
+            const res = await fetch('/api/settings');
+            if (!res.ok) return;
+            const data = await res.json();
+            const sizeEl = document.getElementById('pref-model-size');
+            const typeEl = document.getElementById('pref-model-type');
+            const autoEl = document.getElementById('pref-auto-preload');
+            if (sizeEl && data.preferred_model_size) sizeEl.value = data.preferred_model_size;
+            if (typeEl && data.preferred_model_type) typeEl.value = data.preferred_model_type;
+            if (autoEl && data.auto_preload_on_start != null) autoEl.checked = !!data.auto_preload_on_start;
+        } catch (e) {
+            // Settings endpoint not yet available — ignore silently
+        }
+    }
+
+    document.getElementById('btn-save-settings').addEventListener('click', async () => {
+        const msgEl = document.getElementById('settings-save-msg');
+        msgEl.className = 'settings-save-msg';
+        msgEl.classList.remove('hidden');
+        msgEl.textContent = 'Saving…';
+        try {
+            const payload = {
+                preferred_model_size: document.getElementById('pref-model-size').value,
+                preferred_model_type: document.getElementById('pref-model-type').value,
+                auto_preload_on_start: document.getElementById('pref-auto-preload').checked
+            };
+            const res = await fetch('/api/settings', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            msgEl.textContent = 'Saved!';
+            msgEl.classList.add('ok');
+            setTimeout(() => { msgEl.classList.add('hidden'); }, 2000);
+        } catch (e) {
+            msgEl.textContent = `Error: ${e.message}`;
+            msgEl.classList.add('error');
+        }
+    });
+
+    // ─── Settings: Models tab ─────────────────────────────────────────────────
+
+    // Tracks which model rows are currently downloading (by "size|type" key)
+    const modelDownloadingKeys = new Set();
+
+    async function loadModelsTab() {
+        const wrap = document.getElementById('models-table-wrap');
+        if (!wrap) return;
+        wrap.innerHTML = '<p class="hint">Loading…</p>';
+        try {
+            const res = await fetch('/api/models/status');
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const data = await res.json();
+            renderModelsTable(data);
+        } catch (e) {
+            wrap.innerHTML = `<p class="hint" style="color:#fc8181;">Failed to load models: ${escapeHtml(e.message)}</p>`;
+        }
+    }
+
+    document.getElementById('btn-refresh-models').addEventListener('click', loadModelsTab);
+
+    function renderModelsTable(data) {
+        const wrap = document.getElementById('models-table-wrap');
+        if (!wrap) return;
+        const { models = [], loaded = null } = data;
+        if (models.length === 0) {
+            wrap.innerHTML = '<p class="hint">No model variants found.</p>';
+            return;
+        }
+        const table = document.createElement('table');
+        table.className = 'models-table';
+        table.innerHTML = `
+            <thead>
+                <tr>
+                    <th>Size</th><th>Type</th><th>Cached</th><th>Size</th><th>Actions</th>
+                </tr>
+            </thead>
+            <tbody id="models-tbody"></tbody>`;
+        wrap.innerHTML = '';
+        wrap.appendChild(table);
+        const tbody = document.getElementById('models-tbody');
+
+        models.forEach(m => {
+            const key = `${m.size}|${m.type}`;
+            const isLoaded = loaded && loaded === m.id;
+            const isDownloading = modelDownloadingKeys.has(key);
+            const row = document.createElement('tr');
+
+            const sizeDisplay = m.size_mb ? `${(m.size_mb / 1024).toFixed(1)} GB` : '—';
+
+            let actionCell = '';
+            if (isDownloading) {
+                actionCell = `<span class="model-dl-progress" id="model-dl-${m.size}-${m.type}">Downloading…</span>`;
+            } else if (m.cached) {
+                actionCell = `<button class="secondary-btn small-btn model-action-btn danger-btn"
+                    onclick="modelDelete('${escapeHtml(m.size)}','${escapeHtml(m.type)}')">Delete</button>`;
+            } else {
+                actionCell = `<button class="secondary-btn small-btn model-action-btn"
+                    onclick="modelDownload('${escapeHtml(m.size)}','${escapeHtml(m.type)}')">Download</button>`;
+            }
+
+            row.innerHTML = `
+                <td>${escapeHtml(m.size)}</td>
+                <td>${escapeHtml(m.type)}${isLoaded ? '<span class="model-loaded-badge">LOADED</span>' : ''}</td>
+                <td class="${m.cached ? 'model-cached-yes' : 'model-cached-no'}">${m.cached ? '&#10003;' : '&#10007;'}</td>
+                <td>${sizeDisplay}</td>
+                <td>${actionCell}</td>`;
+            tbody.appendChild(row);
+        });
+    }
+
+    window.modelDownload = async (size, type) => {
+        const key = `${size}|${type}`;
+        modelDownloadingKeys.add(key);
+        // Re-render to show spinner
+        try {
+            const res = await fetch('/api/models/download', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ size, type })
+            });
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const data = await res.json();
+            log(`Download started for ${size} ${type} (id: ${data.model_id})`, 'ok');
+            // Poll /api/progress for completion; when done, refresh the table
+            const pollInterval = setInterval(async () => {
+                if (progressState.status === 'ready' || progressState.status === 'error') {
+                    clearInterval(pollInterval);
+                    modelDownloadingKeys.delete(key);
+                    loadModelsTab();
+                }
+            }, 1500);
+        } catch (e) {
+            log(`Failed to start model download: ${e.message}`, 'error');
+            modelDownloadingKeys.delete(key);
+        }
+        loadModelsTab();
+    };
+
+    window.modelDelete = async (size, type) => {
+        if (!confirm(`Delete the ${size} ${type} model from disk? This cannot be undone.`)) return;
+        try {
+            const res = await fetch(`/api/models/${encodeURIComponent(size)}/${encodeURIComponent(type)}`, {
+                method: 'DELETE'
+            });
+            if (res.status === 409) {
+                alert('Cannot delete the currently loaded model — swap to another first.');
+                return;
+            }
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const data = await res.json();
+            const freed = data.freed_mb ? ` (freed ${(data.freed_mb / 1024).toFixed(1)} GB)` : '';
+            log(`Deleted model ${size} ${type}${freed}`, 'ok');
+            loadModelsTab();
+        } catch (e) {
+            log(`Failed to delete model: ${e.message}`, 'error');
+        }
+    };
+
+    // ─── Settings: Diagnostics tab ────────────────────────────────────────────
+
+    let lastDiagJson = null;
+
+    async function loadDiagnosticsTab() {
+        const healthRows = document.getElementById('diag-health-rows');
+        const jsonPre = document.getElementById('diag-json-pre');
+        if (!healthRows || !jsonPre) return;
+        healthRows.innerHTML = '';
+        jsonPre.textContent = 'Loading…';
+        try {
+            const res = await fetch('/api/diag');
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const data = await res.json();
+            lastDiagJson = data;
+            jsonPre.textContent = JSON.stringify(data, null, 2);
+            renderDiagRows(data, healthRows);
+        } catch (e) {
+            jsonPre.textContent = `Error: ${e.message}`;
+        }
+    }
+
+    function renderDiagRows(data, container) {
+        const p = data.platform || {};
+        const t = data.torch || {};
+        const arch = p.machine || '—';
+        const macos = p.mac_ver || p.release || '—';
+        const mps = !!t.mps_available;
+        const rows = [
+            { label: 'Architecture', value: arch, cls: '' },
+            { label: 'macOS', value: macos, cls: '' },
+            { label: 'Torch / MPS available', value: mps ? '✓' : '✗', cls: mps ? 'ok' : 'error' },
+            { label: 'HF reachable', value: data.hf_reachable ? '✓' : '✗', cls: data.hf_reachable ? 'ok' : 'error' },
+            { label: 'Disk free', value: data.disk_free_gb != null ? `${data.disk_free_gb.toFixed(1)} GB` : '—', cls: '' },
+            { label: 'Loaded model', value: data.loaded_model || 'None', cls: '' },
+            { label: 'Log file', value: data.log_file || '~/.qwen_tts_studio/app.log', cls: '' },
+        ];
+        rows.forEach(r => {
+            const row = document.createElement('div');
+            row.className = 'diag-row';
+            row.innerHTML = `<span class="diag-row-label">${escapeHtml(r.label)}</span>
+                             <span class="diag-row-value ${r.cls}">${escapeHtml(String(r.value))}</span>`;
+            container.appendChild(row);
+        });
+    }
+
+    document.getElementById('btn-refresh-diag').addEventListener('click', loadDiagnosticsTab);
+
+    document.getElementById('btn-copy-diag').addEventListener('click', () => {
+        const text = lastDiagJson ? JSON.stringify(lastDiagJson, null, 2) : (document.getElementById('diag-json-pre') || {}).textContent || '';
+        navigator.clipboard.writeText(text).then(() => {
+            const btn = document.getElementById('btn-copy-diag');
+            const orig = btn.textContent;
+            btn.textContent = 'Copied!';
+            setTimeout(() => { btn.textContent = orig; }, 1500);
+        }).catch(() => {});
+    });
 });
