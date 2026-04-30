@@ -1453,6 +1453,12 @@ const bibleCheckbox = document.getElementById('bible-text-mode');
 
     document.getElementById('btn-refresh-models').addEventListener('click', loadModelsTab);
 
+    const MODEL_TYPE_LABELS = {
+        'Base': 'Voice Cloning',
+        'CustomVoice': 'Preprogrammed Voice',
+        'VoiceDesign': 'Voice Design',
+    };
+
     function renderModelsTable(data) {
         const wrap = document.getElementById('models-table-wrap');
         if (!wrap) return;
@@ -1466,7 +1472,7 @@ const bibleCheckbox = document.getElementById('bible-text-mode');
         table.innerHTML = `
             <thead>
                 <tr>
-                    <th>Size</th><th>Type</th><th>Cached</th><th>Size</th><th>Actions</th>
+                    <th>Size</th><th>Mode</th><th>Cached</th><th>Size</th><th>Actions</th>
                 </tr>
             </thead>
             <tbody id="models-tbody"></tbody>`;
@@ -1481,6 +1487,7 @@ const bibleCheckbox = document.getElementById('bible-text-mode');
             const row = document.createElement('tr');
 
             const sizeDisplay = m.size_mb ? `${(m.size_mb / 1024).toFixed(1)} GB` : '—';
+            const modeLabel = MODEL_TYPE_LABELS[m.type] || m.type;
 
             let actionCell = '';
             if (isDownloading) {
@@ -1498,7 +1505,7 @@ const bibleCheckbox = document.getElementById('bible-text-mode');
 
             row.innerHTML = `
                 <td>${escapeHtml(m.size)}</td>
-                <td>${escapeHtml(m.type)}${isLoaded ? '<span class="model-loaded-badge">LOADED</span>' : ''}</td>
+                <td>${escapeHtml(modeLabel)}${isLoaded ? '<span class="model-loaded-badge">LOADED</span>' : ''}</td>
                 <td class="${m.cached ? 'model-cached-yes' : 'model-cached-no'}">${m.cached ? '&#10003;' : '&#10007;'}</td>
                 <td>${sizeDisplay}</td>
                 <td>${actionCell}</td>`;
