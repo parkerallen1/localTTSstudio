@@ -990,20 +990,40 @@ const bibleCheckbox = document.getElementById('bible-text-mode');
     // ─── Download Progress Banner ─────────────────────────────────────────────
     const downloadBanner = document.getElementById('download-progress-banner');
     const downloadBannerText = document.getElementById('download-progress-text');
+    const downloadBannerDetail = document.getElementById('download-progress-detail');
     let bannerFadeTimer = null;
 
-    function showDownloadBanner(description, pct) {
+    function formatBytes(bytes) {
+        if (!bytes || bytes <= 0) return '';
+        if (bytes >= 1e9) return `${(bytes / 1e9).toFixed(1)} GB`;
+        if (bytes >= 1e6) return `${(bytes / 1e6).toFixed(0)} MB`;
+        if (bytes >= 1e3) return `${(bytes / 1e3).toFixed(0)} KB`;
+        return `${bytes} B`;
+    }
+
+    function formatEta(seconds) {
+        if (!seconds || seconds <= 0) return '';
+        if (seconds >= 3600) return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
+        if (seconds >= 60) return `${Math.floor(seconds / 60)} min`;
+        return `${Math.round(seconds)}s`;
+    }
+
+    function showDownloadBanner(mainText, detailText, isStalled) {
         if (bannerFadeTimer) { clearTimeout(bannerFadeTimer); bannerFadeTimer = null; }
-        downloadBanner.classList.remove('hidden', 'fading-out');
-        const pctStr = pct != null ? ` — ${pct}%` : '';
-        downloadBannerText.textContent = `Downloading model — ${description}${pctStr}`;
+        downloadBanner.classList.remove('hidden', 'fading-out', 'stalled');
+        if (isStalled) downloadBanner.classList.add('stalled');
+        downloadBannerText.textContent = mainText;
+        if (downloadBannerDetail) {
+            downloadBannerDetail.textContent = detailText || '';
+            downloadBannerDetail.style.display = detailText ? 'block' : 'none';
+        }
     }
 
     function hideDownloadBanner() {
         downloadBanner.classList.add('fading-out');
         bannerFadeTimer = setTimeout(() => {
             downloadBanner.classList.add('hidden');
-            downloadBanner.classList.remove('fading-out');
+            downloadBanner.classList.remove('fading-out', 'stalled');
         }, 400);
     }
 
@@ -1029,13 +1049,36 @@ const bibleCheckbox = document.getElementById('bible-text-mode');
                 progressState.description = data.description || '';
 
                 const transitioned = data.status !== prevStatus;
+                const isActive = data.status === 'downloading' || data.status === 'stalled';
+                const isStalled = data.status === 'stalled';
 
-                if (data.status === 'downloading') {
-                    updateStatusBadge('downloading', `Downloading Model... ${progressState.pct}%`);
-                    showDownloadBanner(progressState.description, progressState.pct);
+                if (isActive) {
+                    const repoShort = (data.repo_id || '').replace('Qwen/', '');
+                    const pctStr = progressState.pct > 0 ? ` — ${progressState.pct}%` : '';
+                    const mainText = repoShort
+                        ? `Downloading ${repoShort}${pctStr}`
+                        : `Downloading model${pctStr}`;
+
+                    let detail = '';
+                    if (isStalled) {
+                        detail = 'Slow connection — still trying…';
+                    } else if (data.bytes_done > 0) {
+                        detail = formatBytes(data.bytes_done);
+                        if (data.bytes_total > 0) detail += ` / ${formatBytes(data.bytes_total)}`;
+                        if (data.rate_bps > 0) detail += ` · ${formatBytes(data.rate_bps)}/s`;
+                        const eta = formatEta(data.eta_seconds);
+                        if (eta) detail += ` · ~${eta} left`;
+                    }
+
+                    if (isStalled) {
+                        updateStatusBadge('stalled', `Stalled ${progressState.pct}%`);
+                    } else {
+                        updateStatusBadge('downloading', `Downloading… ${progressState.pct}%`);
+                    }
+                    showDownloadBanner(mainText, detail, isStalled);
                 } else if (data.status === 'ready') {
                     updateStatusBadge('ready', 'Model Ready');
-                    if (transitioned && prevStatus === 'downloading') {
+                    if (transitioned && (prevStatus === 'downloading' || prevStatus === 'stalled')) {
                         log('Model initialized successfully.', 'ok');
                     }
                     hideDownloadBanner();
@@ -1445,6 +1488,9 @@ const bibleCheckbox = document.getElementById('bible-text-mode');
             } else if (m.cached) {
                 actionCell = `<button class="secondary-btn small-btn model-action-btn danger-btn"
                     onclick="modelDelete('${escapeHtml(m.size)}','${escapeHtml(m.type)}')">Delete</button>`;
+            } else if (m.needs_repair) {
+                actionCell = `<button class="secondary-btn small-btn model-action-btn" style="color:#f6c90e;border-color:rgba(246,201,14,0.3);"
+                    onclick="modelRepair('${escapeHtml(m.size)}','${escapeHtml(m.type)}')">Repair</button>`;
             } else {
                 actionCell = `<button class="secondary-btn small-btn model-action-btn"
                     onclick="modelDownload('${escapeHtml(m.size)}','${escapeHtml(m.type)}')">Download</button>`;
@@ -1475,7 +1521,8 @@ const bibleCheckbox = document.getElementById('bible-text-mode');
             log(`Download started for ${size} ${type} (id: ${data.model_id})`, 'ok');
             // Poll /api/progress for completion; when done, refresh the table
             const pollInterval = setInterval(async () => {
-                if (progressState.status === 'ready' || progressState.status === 'error') {
+                const done = progressState.status === 'ready' || progressState.status === 'error';
+                if (done) {
                     clearInterval(pollInterval);
                     modelDownloadingKeys.delete(key);
                     loadModelsTab();
@@ -1486,6 +1533,26 @@ const bibleCheckbox = document.getElementById('bible-text-mode');
             modelDownloadingKeys.delete(key);
         }
         loadModelsTab();
+    };
+
+    window.modelRepair = async (size, type) => {
+        if (!confirm(`Wipe the incomplete download for ${size} ${type}?\n\nThis removes partial files so you can re-download cleanly.`)) return;
+        try {
+            const res = await fetch(`/api/models/${encodeURIComponent(size)}/${encodeURIComponent(type)}/repair`, {
+                method: 'POST'
+            });
+            if (res.status === 409) {
+                alert('Cannot repair the currently loaded model — swap to a different model first.');
+                return;
+            }
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const data = await res.json();
+            const freed = data.freed_mb ? ` (freed ${(data.freed_mb / 1024).toFixed(1)} GB)` : '';
+            log(`Repaired model cache for ${size} ${type}${freed}`, 'ok');
+            loadModelsTab();
+        } catch (e) {
+            log(`Failed to repair model: ${e.message}`, 'error');
+        }
     };
 
     window.modelDelete = async (size, type) => {

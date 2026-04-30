@@ -197,6 +197,12 @@ header h1 {
     border-color: rgba(245, 101, 101, 0.3);
 }
 
+.global-status-badge.stalled {
+    background: rgba(146, 90, 0, 0.2);
+    color: #f6c90e;
+    border-color: rgba(246, 201, 14, 0.3);
+}
+
 .subtitle {
     color: var(--text-muted);
     font-size: 1.1rem;
@@ -994,6 +1000,19 @@ button:focus-visible {
 
 .download-progress-banner.fading-out {
     opacity: 0;
+}
+
+.download-progress-banner.stalled {
+    background: linear-gradient(90deg, #5a3a00 0%, #3d2800 100%);
+    border-bottom-color: #f6c90e;
+    color: #fef3b3;
+}
+
+.dl-banner-detail {
+    font-size: 0.82rem;
+    font-weight: 400;
+    opacity: 0.85;
+    margin-top: 2px;
 }
 
 /* ─── Activity Log Drawer ─── */

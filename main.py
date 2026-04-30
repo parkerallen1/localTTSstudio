@@ -107,12 +107,31 @@ current_model_id = None
 model_lock = None
 generation_lock = None  # Serializes inference calls — MPS is not thread-safe
 
-# Global progress state
+# Global progress state — extended schema streamed to the UI via SSE
 download_progress = {
-    "status": "idle", # idle, downloading, extracting, ready, error
+    "status": "idle",       # idle, downloading, stalled, ready, error
     "progress": 0.0,
-    "description": ""
+    "description": "",
+    "repo_id": "",
+    "bytes_done": 0,
+    "bytes_total": 0,
+    "rate_bps": 0,
+    "eta_seconds": None,
+    "current_file": "",
+    "error_kind": "",       # network, auth, disk, not_found, corrupt, unknown
 }
+
+# Aggregate download-session state — reset at the start of each download
+_download_session: dict = {
+    "active": False,
+    "repo_id": "",
+    "started_ts": 0.0,
+    "bytes_done": 0,
+    "bytes_total": 0,
+    "current_file": "",
+    "_rate_window": [],     # list of (monotonic_ts, cumulative_bytes_done)
+}
+_session_lock = _threading.Lock()
 
 # ─── Format helpers ───────────────────────────────────────────────────────────
 
@@ -144,25 +163,60 @@ class InterceptTqdm(hf_tqdm):
     def update(self, n=1):
         global _last_tqdm_update_ts
         super().update(n)
-        _last_tqdm_update_ts = _time.monotonic()
-        if hasattr(self, 'total') and self.total:
-            pct = (self.n / self.total) * 100
-            download_progress["progress"] = pct
-            download_progress["status"] = "downloading"
-            download_progress["description"] = self.desc or "Downloading..."
+        now = _time.monotonic()
+        _last_tqdm_update_ts = now
 
-            # Emit a log on the very first update for this tqdm instance.
+        if hasattr(self, 'total') and self.total and n > 0:
+            # Log start of this individual file
             if not getattr(self, '_emitted_start', False):
                 self._emitted_start = True
-                self._emitted_pct_boundary = 0  # last 10%-boundary we logged
-                self._start_ts = _time.monotonic()
+                self._emitted_pct_boundary = 0
+                self._start_ts = now
                 emit_log(
                     f"HF download started: {self.desc} (total={format_size(self.total)})",
                     "info"
                 )
 
-            # Emit a log every time progress crosses a 10% boundary.
-            boundary = int(pct // 10) * 10
+            # Update aggregate session state under lock (multiple threads download in parallel)
+            with _session_lock:
+                if not getattr(self, '_registered_bytes', False):
+                    self._registered_bytes = True
+                    _download_session["bytes_total"] += self.total
+
+                _download_session["bytes_done"] += n
+                _download_session["current_file"] = self.desc or ""
+
+                window = _download_session["_rate_window"]
+                window.append((now, _download_session["bytes_done"]))
+                cutoff = now - 5.0
+                while window and window[0][0] < cutoff:
+                    window.pop(0)
+
+                rate_bps = 0.0
+                if len(window) >= 2:
+                    dt = window[-1][0] - window[0][0]
+                    db = window[-1][1] - window[0][1]
+                    if dt > 0:
+                        rate_bps = db / dt
+
+                bytes_done = _download_session["bytes_done"]
+                bytes_total = _download_session["bytes_total"]
+                remaining = bytes_total - bytes_done
+                eta_s = round(remaining / rate_bps) if rate_bps > 0 and remaining > 0 else None
+                pct = round(min(100.0, bytes_done / bytes_total * 100), 1) if bytes_total > 0 else 0.0
+
+            # Write to download_progress outside the lock (dict writes are GIL-safe)
+            download_progress["status"] = "downloading"
+            download_progress["progress"] = pct
+            download_progress["bytes_done"] = bytes_done
+            download_progress["bytes_total"] = bytes_total
+            download_progress["rate_bps"] = round(rate_bps)
+            download_progress["eta_seconds"] = eta_s
+            download_progress["current_file"] = self.desc or ""
+
+            # Log 10%-boundary and completion for this individual file
+            file_pct = (self.n / self.total) * 100
+            boundary = int(file_pct // 10) * 10
             last_boundary = getattr(self, '_emitted_pct_boundary', 0)
             if boundary > last_boundary and boundary > 0:
                 self._emitted_pct_boundary = boundary
@@ -171,11 +225,9 @@ class InterceptTqdm(hf_tqdm):
                     f" ({format_size(self.n)}/{format_size(self.total)})",
                     "info"
                 )
-
-            # Emit a completion log when finished.
             if self.n >= self.total and not getattr(self, '_emitted_done', False):
                 self._emitted_done = True
-                elapsed = _time.monotonic() - getattr(self, '_start_ts', _time.monotonic())
+                elapsed = now - getattr(self, '_start_ts', now)
                 emit_log(
                     f"HF download complete: {self.desc} ({format_size(self.total)}) in {elapsed:.1f}s",
                     "ok"
@@ -184,6 +236,153 @@ class InterceptTqdm(hf_tqdm):
 # Monkey patch huggingface hub tqdm
 import huggingface_hub.utils as hf_utils
 hf_utils.tqdm = InterceptTqdm
+
+# ─── Download session helpers ─────────────────────────────────────────────────
+
+def _begin_download_session(repo_id: str):
+    with _session_lock:
+        _download_session["active"] = True
+        _download_session["repo_id"] = repo_id
+        _download_session["started_ts"] = _time.monotonic()
+        _download_session["bytes_done"] = 0
+        _download_session["bytes_total"] = 0
+        _download_session["current_file"] = ""
+        _download_session["_rate_window"] = []
+    download_progress["repo_id"] = repo_id
+    download_progress["bytes_done"] = 0
+    download_progress["bytes_total"] = 0
+    download_progress["rate_bps"] = 0
+    download_progress["eta_seconds"] = None
+    download_progress["current_file"] = ""
+    download_progress["error_kind"] = ""
+
+def _end_download_session():
+    with _session_lock:
+        _download_session["active"] = False
+
+# ─── Error classification ─────────────────────────────────────────────────────
+
+def _classify_error(exc: Exception, repo_id: str = "") -> tuple:
+    """Returns (error_kind: str, human_message: str)."""
+    exc_str = str(exc)
+    exc_type = type(exc).__name__
+
+    # Try to access HF-specific exception types (location varies by version)
+    _HfHubHTTPError = _RepositoryNotFoundError = _EntryNotFoundError = None
+    try:
+        from huggingface_hub.errors import (
+            HfHubHTTPError, RepositoryNotFoundError, EntryNotFoundError,
+        )
+        _HfHubHTTPError = HfHubHTTPError
+        _RepositoryNotFoundError = RepositoryNotFoundError
+        _EntryNotFoundError = EntryNotFoundError
+    except ImportError:
+        try:
+            from huggingface_hub.utils import (
+                HfHubHTTPError, RepositoryNotFoundError, EntryNotFoundError,
+            )
+            _HfHubHTTPError = HfHubHTTPError
+            _RepositoryNotFoundError = RepositoryNotFoundError
+            _EntryNotFoundError = EntryNotFoundError
+        except ImportError:
+            pass
+
+    if _HfHubHTTPError and isinstance(exc, _HfHubHTTPError):
+        resp = getattr(exc, 'response', None)
+        code = resp.status_code if resp is not None else 0
+        if code in (401, 403):
+            return ("auth",
+                    "Authorization failed. The model may be private or your "
+                    "HF_TOKEN may be missing or expired.")
+        if code == 404:
+            return ("not_found", f"Model not found on Hugging Face: {repo_id}.")
+        if code >= 500:
+            return ("network",
+                    "Hugging Face server error. Try again in a few minutes.")
+
+    if _RepositoryNotFoundError and isinstance(exc, _RepositoryNotFoundError):
+        if "401" in exc_str or "403" in exc_str:
+            return ("auth",
+                    "Authorization failed. The model may be private or your "
+                    "HF_TOKEN may be missing or expired.")
+        return ("not_found", f"Model not found on Hugging Face: {repo_id}.")
+
+    if _EntryNotFoundError and isinstance(exc, _EntryNotFoundError):
+        return ("not_found", f"Model files not found on Hugging Face: {repo_id}.")
+
+    # Disk / IO errors
+    if isinstance(exc, OSError):
+        eno = getattr(exc, 'errno', None)
+        if eno == 28 or "No space left" in exc_str:
+            return ("disk",
+                    "Out of disk space while downloading. Free up space and retry.")
+        if eno == 30:
+            return ("disk",
+                    "Cache directory is read-only. Check permissions on ~/.cache/huggingface.")
+
+    # Network / connectivity errors
+    network_signals = (
+        "ConnectionError", "TimeoutError", "ConnectTimeout", "ReadTimeout",
+        "ChunkedEncodingError", "ConnectionResetError", "gaierror",
+        "Name or service not known", "nodename nor servname",
+        "Connection refused", "Connection reset",
+        "urlopen error", "RemoteDisconnected", "IncompleteRead",
+    )
+    if any(sig in exc_str or sig in exc_type for sig in network_signals):
+        return ("network",
+                "Network error reaching Hugging Face. Check your internet connection and retry.")
+
+    return ("unknown", f"Unexpected error: {exc_str}")
+
+# ─── Retry wrapper ────────────────────────────────────────────────────────────
+
+def _with_retry(fn, *fn_args, max_attempts=3, base_delay=2.0, retry_repo_id="", **fn_kwargs):
+    """Sync wrapper: call fn(*fn_args, **fn_kwargs) with exponential backoff on transient errors."""
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return fn(*fn_args, **fn_kwargs)
+        except Exception as exc:
+            kind, _ = _classify_error(exc, retry_repo_id)
+            if kind != "network" or attempt == max_attempts:
+                raise
+            delay = base_delay * (2 ** (attempt - 1))
+            emit_log(
+                f"HF download retry {attempt + 1}/{max_attempts} in {delay:.0f}s "
+                f"after: {type(exc).__name__}",
+                "warn"
+            )
+            _time.sleep(delay)
+            # Reset session bytes so progress restarts cleanly on retry
+            if _download_session["active"]:
+                _begin_download_session(_download_session["repo_id"])
+
+# ─── Disk preflight ───────────────────────────────────────────────────────────
+
+_MODEL_SIZE_ESTIMATE_GB = {
+    ("0.6B", "Base"): 1.5, ("0.6B", "CustomVoice"): 1.5, ("0.6B", "VoiceDesign"): 1.5,
+    ("1.7B", "Base"): 3.5, ("1.7B", "CustomVoice"): 3.5, ("1.7B", "VoiceDesign"): 3.5,
+}
+
+def _check_disk_space(size: str, model_type: str) -> Optional[str]:
+    """Return an error message string if there is insufficient disk space, else None."""
+    required_gb = _MODEL_SIZE_ESTIMATE_GB.get((size, model_type), 4.0)
+    required_with_overhead = required_gb * 1.3
+    try:
+        hf_cache = _hf_cache_dir()
+        check_path = hf_cache
+        while not os.path.exists(check_path) and check_path not in ("/", ""):
+            check_path = os.path.dirname(check_path)
+        if not os.path.exists(check_path):
+            check_path = os.path.expanduser("~")
+        free_gb = shutil.disk_usage(check_path).free / 1e9
+        if free_gb < required_with_overhead:
+            return (
+                f"Not enough disk space. Need ~{required_gb:.1f} GB free in "
+                f"{hf_cache}, but only {free_gb:.1f} GB available."
+            )
+    except Exception:
+        pass
+    return None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -216,24 +415,27 @@ async def lifespan(app: FastAPI):
 
     # ── Download-hang watchdog ─────────────────────────────────────────────────
     async def _download_watchdog():
-        """Background task: warns if an HF download stalls for 30+ seconds."""
-        POLL_INTERVAL = 15      # seconds between checks
-        STALL_THRESHOLD = 30    # seconds without a tqdm update = stalled
+        """Background task: surfaces stalled downloads to the UI after 30s of silence."""
+        POLL_INTERVAL = 15
+        STALL_THRESHOLD = 30
         _warned_this_stall = False
         while True:
             await asyncio.sleep(POLL_INTERVAL)
-            if download_progress.get("status") == "downloading":
+            if download_progress.get("status") in ("downloading", "stalled"):
                 idle = _time.monotonic() - _last_tqdm_update_ts
                 if idle >= STALL_THRESHOLD:
                     if not _warned_this_stall:
+                        _warned_this_stall = True
                         emit_log(
                             "Download appears stalled — no progress in 30s. "
                             "Check network/firewall.",
                             "warn"
                         )
-                        _warned_this_stall = True
+                    # Surface stall to UI so the banner turns yellow
+                    download_progress["status"] = "stalled"
                 else:
-                    _warned_this_stall = False
+                    if _warned_this_stall:
+                        _warned_this_stall = False
             else:
                 _warned_this_stall = False
 
@@ -273,10 +475,11 @@ VALID_MODEL_SIZES = {"0.6B", "1.7B"}
 VALID_MODEL_TYPES = {"Base", "CustomVoice", "VoiceDesign"}
 
 def _load_model_sync(model_id: str, device: str, dtype: torch.dtype):
-    """Synchronous function to load the model."""
+    """Synchronous model load with retry on transient network errors."""
     from qwen_tts import Qwen3TTSModel
-    m = Qwen3TTSModel.from_pretrained(model_id, device_map=device, dtype=dtype)
-    return m
+    def _do_load():
+        return Qwen3TTSModel.from_pretrained(model_id, device_map=device, dtype=dtype)
+    return _with_retry(_do_load, max_attempts=3, base_delay=2.0, retry_repo_id=model_id)
 
 async def get_tts_model(size: str = "1.7B", model_type: str = "CustomVoice"):
     global model, current_model_id, model_lock
@@ -323,15 +526,28 @@ async def get_tts_model(size: str = "1.7B", model_type: str = "CustomVoice"):
             dtype = torch.bfloat16
 
         emit_log(f"Loading model {expected_model_id} → device={device}, dtype={dtype}", "info")
+
+        # Preflight: abort early if disk space is insufficient
+        if not _model_is_cached(size, model_type):
+            disk_err = _check_disk_space(size, model_type)
+            if disk_err:
+                download_progress["status"] = "error"
+                download_progress["description"] = disk_err
+                download_progress["error_kind"] = "disk"
+                emit_log(f"Disk preflight failed: {disk_err}", "error")
+                raise RuntimeError(disk_err)
+
+        _begin_download_session(expected_model_id)
         download_progress["status"] = "downloading"
-        download_progress["description"] = f"Initializing model download ({size} {model_type})..."
+        download_progress["description"] = f"Downloading {size} {model_type}…"
         download_progress["progress"] = 0.0
-        
+
         load_t0 = _time.monotonic()
         try:
             model = await asyncio.to_thread(_load_model_sync, expected_model_id, device, dtype)
             load_elapsed = _time.monotonic() - load_t0
             current_model_id = expected_model_id
+            _end_download_session()
             download_progress["status"] = "ready"
             download_progress["description"] = "Model loaded successfully."
             download_progress["progress"] = 100.0
@@ -342,28 +558,57 @@ async def get_tts_model(size: str = "1.7B", model_type: str = "CustomVoice"):
             import traceback
             traceback.print_exc()
             emit_log(f"Model load FAILED after {load_elapsed:.1f}s: {e}", "error")
+            _end_download_session()
             model = None
             current_model_id = None
+            kind, msg = _classify_error(e, expected_model_id)
             download_progress["status"] = "error"
-            download_progress["description"] = f"Failed to load: {str(e)}"
+            download_progress["description"] = msg
+            download_progress["error_kind"] = kind
             raise RuntimeError(f"Failed to load model: {e}")
 
 # ─── _prefetch_model ──────────────────────────────────────────────────────────
 
 async def _prefetch_model(size: str, model_type: str):
     """Download model weights to HF cache without loading into memory/swapping
-    the currently active model. Uses huggingface_hub.snapshot_download so the
-    InterceptTqdm progress hooks still fire normally."""
+    the currently active model. Errors are surfaced to download_progress so the
+    UI shows them instead of silently swallowing them."""
     from huggingface_hub import snapshot_download
     repo_id = f"Qwen/Qwen3-TTS-12Hz-{size}-{model_type}"
+
+    # Preflight disk check
+    if not _model_is_cached(size, model_type):
+        disk_err = _check_disk_space(size, model_type)
+        if disk_err:
+            download_progress["status"] = "error"
+            download_progress["description"] = disk_err
+            download_progress["error_kind"] = "disk"
+            emit_log(f"Disk preflight failed: {disk_err}", "error")
+            return
+
     emit_log(f"Prefetch started: {repo_id}", "info")
+    _begin_download_session(repo_id)
+    download_progress["status"] = "downloading"
+    download_progress["description"] = f"Downloading {size} {model_type}…"
     t0 = _time.monotonic()
     try:
-        await asyncio.to_thread(snapshot_download, repo_id)
+        await asyncio.to_thread(
+            _with_retry, snapshot_download, repo_id,
+            max_attempts=3, base_delay=2.0, retry_repo_id=repo_id,
+        )
         elapsed = _time.monotonic() - t0
+        _end_download_session()
+        download_progress["status"] = "ready"
+        download_progress["description"] = "Model downloaded."
+        download_progress["progress"] = 100.0
         emit_log(f"Prefetch complete: {repo_id} in {elapsed:.1f}s", "ok")
     except Exception as exc:
         elapsed = _time.monotonic() - t0
+        _end_download_session()
+        kind, msg = _classify_error(exc, repo_id)
+        download_progress["status"] = "error"
+        download_progress["description"] = msg
+        download_progress["error_kind"] = kind
         emit_log(f"Prefetch FAILED for {repo_id} after {elapsed:.1f}s: {exc}", "error")
 
 # ─── Directory size helper ────────────────────────────────────────────────────
@@ -394,14 +639,57 @@ def _model_cache_subdir(size: str, model_type: str) -> str:
     )
 
 def _model_is_cached(size: str, model_type: str) -> bool:
-    """True if the model's HF cache directory exists and contains snapshots."""
+    """True if a complete, intact model snapshot exists in the HF cache.
+
+    Checks for: no .incomplete blobs, config.json present, and at least one
+    model weight shard. Returns False for partial/corrupt downloads.
+    """
     subdir = _model_cache_subdir(size, model_type)
     snapshots_dir = os.path.join(subdir, "snapshots")
     if not os.path.isdir(snapshots_dir):
         return False
-    for _root, _dirs, files in os.walk(snapshots_dir):
-        if files:
-            return True
+
+    # Reject if any .incomplete blob exists (indicates an interrupted download)
+    blobs_dir = os.path.join(subdir, "blobs")
+    if os.path.isdir(blobs_dir):
+        try:
+            for fname in os.listdir(blobs_dir):
+                if fname.endswith(".incomplete"):
+                    return False
+        except OSError:
+            return False
+
+    # Find the most recently modified snapshot directory
+    try:
+        snap_entries = [
+            os.path.join(snapshots_dir, d)
+            for d in os.listdir(snapshots_dir)
+            if os.path.isdir(os.path.join(snapshots_dir, d))
+        ]
+    except OSError:
+        return False
+    if not snap_entries:
+        return False
+    latest_snap = max(snap_entries, key=os.path.getmtime)
+
+    # config.json must exist and be non-empty
+    config_path = os.path.join(latest_snap, "config.json")
+    try:
+        if not os.path.exists(config_path) or os.path.getsize(config_path) == 0:
+            return False
+    except OSError:
+        return False
+
+    # At least one weight shard must exist and be non-empty
+    try:
+        for fname in os.listdir(latest_snap):
+            if fname.endswith((".safetensors", ".bin")):
+                fpath = os.path.join(latest_snap, fname)
+                if os.path.exists(fpath) and os.path.getsize(fpath) > 0:
+                    return True
+    except OSError:
+        pass
+    return False
     return False
 
 # ─── Settings ─────────────────────────────────────────────────────────────────
@@ -548,12 +836,15 @@ async def models_status():
         for mtype in sorted(VALID_MODEL_TYPES):
             subdir = _model_cache_subdir(size, mtype)
             cached = _model_is_cached(size, mtype)
-            size_mb = round(_dir_size_mb(subdir), 1) if cached else 0.0
+            # needs_repair: a partial/corrupt cache dir exists but didn't pass integrity check
+            needs_repair = (not cached) and os.path.isdir(subdir)
+            size_mb = round(_dir_size_mb(subdir), 1) if (cached or needs_repair) else 0.0
             result.append({
                 "id": f"Qwen/Qwen3-TTS-12Hz-{size}-{mtype}",
                 "size": size,
                 "type": mtype,
                 "cached": cached,
+                "needs_repair": needs_repair,
                 "size_mb": size_mb,
             })
     return {"models": result, "loaded": current_model_id}
@@ -598,6 +889,27 @@ async def delete_model(size: str, model_type: str):
     freed_mb = round(_dir_size_mb(subdir), 1)
     shutil.rmtree(subdir)
     emit_log(f"Deleted cached model {model_id} ({freed_mb} MB freed)", "ok")
+    return {"ok": True, "freed_mb": freed_mb}
+
+@app.post("/api/models/{size}/{model_type}/repair")
+async def repair_model(size: str, model_type: str):
+    """Wipe a corrupt or partially-downloaded model cache so it can be re-downloaded."""
+    if size not in VALID_MODEL_SIZES:
+        raise HTTPException(status_code=400, detail=f"Invalid size. Must be one of: {', '.join(VALID_MODEL_SIZES)}")
+    if model_type not in VALID_MODEL_TYPES:
+        raise HTTPException(status_code=400, detail=f"Invalid type. Must be one of: {', '.join(VALID_MODEL_TYPES)}")
+
+    model_id = f"Qwen/Qwen3-TTS-12Hz-{size}-{model_type}"
+    if current_model_id == model_id:
+        raise HTTPException(status_code=409, detail="Cannot repair the currently loaded model — swap to a different model first.")
+
+    subdir = _model_cache_subdir(size, model_type)
+    if not os.path.isdir(subdir):
+        raise HTTPException(status_code=404, detail=f"No cache directory found for {model_id}.")
+
+    freed_mb = round(_dir_size_mb(subdir), 1)
+    shutil.rmtree(subdir)
+    emit_log(f"Repaired (cleared) corrupt cache for {model_id} ({freed_mb} MB freed)", "ok")
     return {"ok": True, "freed_mb": freed_mb}
 
 # ─── Settings endpoints ───────────────────────────────────────────────────────

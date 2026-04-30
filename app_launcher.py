@@ -110,9 +110,12 @@ LOADING_HTML = """<!DOCTYPE html>
   <p class="subtitle">Local text-to-speech, runs entirely on your machine.</p>
   <div class="spinner"></div>
   <p id="status">Starting server...</p>
-  <p id="log-hint" style="display: none; color: var(--muted); font-size: 0.85rem; margin-top: 2rem; opacity: 0.8; line-height: 1.4;">
-    Taking a while? The first startup can take a few minutes as models are downloaded.<br><br>
-    If it's stuck, check the app log file at:<br>
+  <p id="log-hint" style="display: none; color: var(--muted); font-size: 0.85rem; margin-top: 2rem; opacity: 0.8; line-height: 1.6;">
+    Still starting up? On first launch, models may download automatically &mdash;
+    this is a one-time download of 1.5&ndash;3.5 GB depending on the model size.
+    On a typical home connection that takes 3&ndash;10 minutes.
+    The download progress will appear in the app once the server is ready.<br><br>
+    For details, check the log file at:<br>
     <code style="background: rgba(255,255,255,0.1); padding: 2px 6px; border-radius: 4px; color: var(--text);">~/.qwen_tts_studio/app.log</code>
   </p>
 </div>
