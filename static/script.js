@@ -562,8 +562,9 @@ const bibleCheckbox = document.getElementById('bible-text-mode');
             text = cleanTextBible(text);
         }
 
-        // Split by newlines, filter empty
-        const rawParagraphs = text.split(/\n+/).map(p => p.trim()).filter(p => p.length > 0);
+        // Split by newlines, filter empty, then merge short consecutive paragraphs
+        const splitParagraphs = text.split(/\n+/).map(p => p.trim()).filter(p => p.length > 0);
+        const rawParagraphs = combineShortParagraphs(splitParagraphs);
         const batchId = Date.now();
 
         revokeAllBlobUrls();
@@ -1191,6 +1192,28 @@ const bibleCheckbox = document.getElementById('bible-text-mode');
         if (!globalStatusBadge) return;
         globalStatusBadge.className = `global-status-badge ${statusClass}`;
         globalStatusBadge.textContent = textContent;
+    }
+
+    // Merge consecutive short paragraphs for smoother TTS prosody.
+    // Target: 250-325 chars. Order is preserved; long paragraphs pass through untouched.
+    function combineShortParagraphs(paragraphs, minLen = 250, maxLen = 325) {
+        const result = [];
+        let buffer = '';
+        for (const p of paragraphs) {
+            if (!buffer) {
+                buffer = p;
+                continue;
+            }
+            const combined = buffer + ' ' + p;
+            if (buffer.length < minLen && combined.length <= maxLen) {
+                buffer = combined;
+            } else {
+                result.push(buffer);
+                buffer = p;
+            }
+        }
+        if (buffer) result.push(buffer);
+        return result;
     }
 
     // General cleanup applied to all text
