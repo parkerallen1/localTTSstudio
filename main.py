@@ -837,7 +837,7 @@ async def generate_audio(
     ref_audio: UploadFile = File(None),
     profile_id: str = Form(None),
     instruct: str = Form(None),
-    temperature: float = Form(0.3)
+    temperature: float = Form(0.85)
 ):
     if model_size not in VALID_MODEL_SIZES:
         raise HTTPException(status_code=400, detail=f"Invalid model_size. Must be one of: {', '.join(VALID_MODEL_SIZES)}")
