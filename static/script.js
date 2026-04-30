@@ -1195,6 +1195,10 @@ const bibleCheckbox = document.getElementById('bible-text-mode');
 
     // General cleanup applied to all text
     function cleanTextGeneral(text) {
+        // strip emojis and pictographs — they confuse the TTS model
+        text = text.replace(/\p{Extended_Pictographic}/gu, '');
+        text = text.replace(/[ \t]+/g, ' ');
+
         // Ending every line with a period
         text = text.replace(/(^[^\n.]+)(?=$|\n)/gm, '$1.');
 
