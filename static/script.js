@@ -1209,7 +1209,7 @@ const bibleCheckbox = document.getElementById('bible-text-mode');
 
     // Merge consecutive short paragraphs for smoother TTS prosody.
     // Target: 250-325 chars. Order is preserved; long paragraphs pass through untouched.
-    function combineShortParagraphs(paragraphs, minLen = 250, maxLen = 325) {
+    function combineShortParagraphs(paragraphs, minLen = 225, maxLen = 325) {
         const result = [];
         let buffer = '';
         for (const p of paragraphs) {
