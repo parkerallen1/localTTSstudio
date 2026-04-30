@@ -97,6 +97,10 @@ def save_profiles(profiles):
     with open(PROFILES_FILE, "w") as f:
         json.dump(user_profiles, f, indent=4)
 
+# Signalled by the OTA endpoint so app_launcher.py can trigger a clean restart
+import threading as _threading
+ota_requested = _threading.Event()
+
 # Global context for the model to keep it loaded
 model = None
 current_model_id = None
@@ -1261,7 +1265,7 @@ async def do_update(download_url: str = Form(...)):
             script_path = os.path.join(temp_dir, "update.sh")
             with open(script_path, "w") as f:
                 f.write(f'''#!/bin/bash
-sleep 4
+sleep 12
 rm -rf "{app_path}"
 mv "{extracted_app_path}" "{app_path}"
 open "{app_path}"
@@ -1283,7 +1287,7 @@ rm -rf "{temp_dir}"
             script_path = os.path.join(temp_dir, "update.sh")
             with open(script_path, "w") as f:
                 f.write(f'''#!/bin/bash
-sleep 4
+sleep 12
 cp -R "{extracted_source_path}/"* "{app_path}/"
 rm -rf "{temp_dir}"
 cd "{app_path}"
@@ -1293,13 +1297,11 @@ cd "{app_path}"
         
         # Run it detached
         subprocess.Popen(["/bin/bash", script_path], start_new_session=True)
-        
-        # Kill the current process right away to let script do the replacement
-        async def _kill_soon():
-            await asyncio.sleep(2.0)
-            os._exit(0)
-        asyncio.create_task(_kill_soon())
-        
+
+        # Signal the launcher's OTA watcher to trigger a clean graceful shutdown.
+        # The bash script's sleep 12 window covers the 10s uvicorn join timeout.
+        ota_requested.set()
+
         return {"status": "success", "message": "Update initiated. Restarting..."}
 
     except Exception as e:
