@@ -302,6 +302,13 @@ input[type="file"]:focus {
     box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.2);
 }
 
+input[type="range"] {
+    width: 100%;
+    accent-color: var(--primary);
+    height: 6px;
+    cursor: pointer;
+}
+
 textarea {
     background: rgba(0, 0, 0, 0.2);
     border: 1px solid var(--glass-border);

@@ -831,7 +831,9 @@ async def generate_audio(
     voice_design_prompt: str = Form(None),
     ref_text: str = Form(None),
     ref_audio: UploadFile = File(None),
-    profile_id: str = Form(None)
+    profile_id: str = Form(None),
+    instruct: str = Form(None),
+    temperature: float = Form(0.3)
 ):
     if model_size not in VALID_MODEL_SIZES:
         raise HTTPException(status_code=400, detail=f"Invalid model_size. Must be one of: {', '.join(VALID_MODEL_SIZES)}")
@@ -866,10 +868,11 @@ async def generate_audio(
                 text=text,
                 language=language,
                 speaker=speaker,
-                temperature=0.3,
+                instruct=instruct or None,
+                temperature=temperature,
                 repetition_penalty=1.1,
                 top_p=0.8,
-                subtalker_temperature=0.3
+                subtalker_temperature=temperature
             )
         elif model_type == "VoiceDesign":
             if not voice_design_prompt:
@@ -880,10 +883,10 @@ async def generate_audio(
                 text=text,
                 language=language,
                 instruct=voice_design_prompt,
-                temperature=0.3,
+                temperature=temperature,
                 repetition_penalty=1.1,
                 top_p=0.8,
-                subtalker_temperature=0.3
+                subtalker_temperature=temperature
             )
         elif model_type == "Base":
             if profile_id:
@@ -917,10 +920,10 @@ async def generate_audio(
                 language=language,
                 ref_audio=temp_audio_path,
                 ref_text=actual_ref_text,
-                temperature=0.3,
+                temperature=temperature,
                 repetition_penalty=1.1,
                 top_p=0.8,
-                subtalker_temperature=0.3
+                subtalker_temperature=temperature
             )
 
             # Cleanup temp file if it was a temporary upload

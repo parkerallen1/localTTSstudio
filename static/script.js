@@ -133,8 +133,15 @@ document.addEventListener('DOMContentLoaded', () => {
     log('Studio ready.', 'ok');
 
     const configCustomVoice = document.getElementById('config-custom-voice');
+    const configCustomVoiceInstruct = document.getElementById('config-custom-voice-instruct');
     const configVoiceDesign = document.getElementById('config-voice-design');
     const configBase = document.getElementById('config-base');
+    const customVoiceInstruct = document.getElementById('custom-voice-instruct');
+    const temperatureSlider = document.getElementById('temperature-slider');
+    const temperatureValue = document.getElementById('temperature-value');
+    temperatureSlider.addEventListener('input', () => {
+        temperatureValue.textContent = parseFloat(temperatureSlider.value).toFixed(2);
+    });
 
     // --- Auto-Updater Logic ---
     async function checkForUpdates() {
@@ -737,11 +744,15 @@ const bibleCheckbox = document.getElementById('bible-text-mode');
 
             if (modelTypeSelect.value === 'CustomVoice') {
                 formData.append("speaker", speakerSelect.value);
+                if (customVoiceInstruct.value.trim()) {
+                    formData.append("instruct", customVoiceInstruct.value.trim());
+                }
             } else if (modelTypeSelect.value === 'VoiceDesign') {
                 formData.append("voice_design_prompt", voiceDesignPrompt.value);
             } else if (modelTypeSelect.value === 'Base') {
                 formData.append("profile_id", savedVoiceSelect.value);
             }
+            formData.append("temperature", temperatureSlider.value);
 
             const response = await fetch('/api/generate', {
                 method: 'POST',
@@ -1054,11 +1065,13 @@ const bibleCheckbox = document.getElementById('bible-text-mode');
     function applyModelTypeConfig() {
         const selected = modelTypeSelect.value;
         configCustomVoice.classList.add('hidden');
+        configCustomVoiceInstruct.classList.add('hidden');
         configVoiceDesign.classList.add('hidden');
         configBase.classList.add('hidden');
 
         if (selected === 'CustomVoice') {
             configCustomVoice.classList.remove('hidden');
+            configCustomVoiceInstruct.classList.remove('hidden');
         } else if (selected === 'VoiceDesign') {
             configVoiceDesign.classList.remove('hidden');
         } else if (selected === 'Base') {
