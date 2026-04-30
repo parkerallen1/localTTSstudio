@@ -6,3 +6,5 @@ soundfile
 pydub
 python-multipart
 requests
+rumps>=0.4.0
+pyobjc-framework-Cocoa
