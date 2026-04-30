@@ -482,7 +482,6 @@ if __name__ == '__main__':
             try:
                 while True:
                     time.sleep(1)
-                    global _loading_page
                     if _loading_page and port_in_use():
                         try:
                             os.unlink(_loading_page)
