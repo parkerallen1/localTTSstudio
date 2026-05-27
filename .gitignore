@@ -9,3 +9,4 @@ __pycache__/
 .claude/
 data/projects/
 data/settings.json
+*.bak
