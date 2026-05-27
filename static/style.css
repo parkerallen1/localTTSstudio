@@ -1008,11 +1008,67 @@ button:focus-visible {
     color: #fef3b3;
 }
 
+.download-progress-banner.connecting {
+    background: linear-gradient(90deg, #2a2a4a 0%, #1f1f3a 100%);
+    border-bottom-color: #a78bfa;
+    color: #e0d7ff;
+}
+
 .dl-banner-detail {
     font-size: 0.82rem;
     font-weight: 400;
     opacity: 0.85;
     margin-top: 2px;
+}
+
+.dl-banner-file {
+    font-size: 0.75rem;
+    font-weight: 400;
+    opacity: 0.6;
+    margin-top: 1px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 100%;
+}
+
+.dl-progress-bar {
+    margin: 8px auto 0;
+    max-width: 720px;
+    height: 6px;
+    background: rgba(255, 255, 255, 0.08);
+    border-radius: 3px;
+    overflow: hidden;
+    position: relative;
+}
+
+.dl-progress-fill {
+    height: 100%;
+    width: 0%;
+    background: linear-gradient(90deg, #63b3ed 0%, #4299e1 100%);
+    border-radius: 3px;
+    transition: width 0.3s ease;
+    box-shadow: 0 0 8px rgba(99, 179, 237, 0.6);
+}
+
+.download-progress-banner.stalled .dl-progress-fill {
+    background: linear-gradient(90deg, #f6c90e 0%, #d4a200 100%);
+    box-shadow: 0 0 8px rgba(246, 201, 14, 0.5);
+}
+
+/* Indeterminate (connecting): no concrete percentage yet — animate a moving
+   chunk left-to-right so users can see the UI is alive. */
+.download-progress-banner.connecting .dl-progress-fill {
+    width: 35% !important;
+    background: linear-gradient(90deg, transparent 0%, #a78bfa 50%, transparent 100%);
+    box-shadow: none;
+    animation: dl-indeterminate 1.4s ease-in-out infinite;
+}
+
+@keyframes dl-indeterminate {
+    0%   { transform: translateX(-100%); }
+    100% { transform: translateX(285%); }
 }
 
 /* ─── Activity Log Drawer ─── */

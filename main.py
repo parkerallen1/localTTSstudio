@@ -110,6 +110,7 @@ generation_lock = None  # Serializes inference calls — MPS is not thread-safe
 # Global progress state — extended schema streamed to the UI via SSE
 download_progress = {
     "status": "idle",       # idle, downloading, stalled, ready, error
+    "phase": "idle",        # idle, connecting, downloading, stalled — finer-grained than status
     "progress": 0.0,
     "description": "",
     "repo_id": "",
@@ -117,6 +118,8 @@ download_progress = {
     "bytes_total": 0,
     "rate_bps": 0,
     "eta_seconds": None,
+    "elapsed_seconds": 0,   # since current session started
+    "idle_seconds": 0,      # since last tqdm update (0 if no updates yet)
     "current_file": "",
     "error_kind": "",       # network, auth, disk, not_found, corrupt, unknown
 }
@@ -207,12 +210,17 @@ class InterceptTqdm(hf_tqdm):
 
             # Write to download_progress outside the lock (dict writes are GIL-safe)
             download_progress["status"] = "downloading"
+            download_progress["phase"] = "downloading"
             download_progress["progress"] = pct
             download_progress["bytes_done"] = bytes_done
             download_progress["bytes_total"] = bytes_total
             download_progress["rate_bps"] = round(rate_bps)
             download_progress["eta_seconds"] = eta_s
             download_progress["current_file"] = self.desc or ""
+            session_started = _download_session.get("started_ts", 0.0)
+            if session_started > 0:
+                download_progress["elapsed_seconds"] = int(now - session_started)
+            download_progress["idle_seconds"] = 0
 
             # Log 10%-boundary and completion for this individual file
             file_pct = (self.n / self.total) * 100
@@ -240,6 +248,10 @@ hf_utils.tqdm = InterceptTqdm
 # ─── Download session helpers ─────────────────────────────────────────────────
 
 def _begin_download_session(repo_id: str):
+    global _last_tqdm_update_ts
+    # Reset the tqdm-update timestamp so the watchdog doesn't false-positive
+    # "stalled" on the first poll of a fresh session (before any byte has flowed).
+    _last_tqdm_update_ts = 0.0
     with _session_lock:
         _download_session["active"] = True
         _download_session["repo_id"] = repo_id
@@ -249,16 +261,21 @@ def _begin_download_session(repo_id: str):
         _download_session["current_file"] = ""
         _download_session["_rate_window"] = []
     download_progress["repo_id"] = repo_id
+    download_progress["phase"] = "connecting"
     download_progress["bytes_done"] = 0
     download_progress["bytes_total"] = 0
     download_progress["rate_bps"] = 0
     download_progress["eta_seconds"] = None
+    download_progress["elapsed_seconds"] = 0
+    download_progress["idle_seconds"] = 0
     download_progress["current_file"] = ""
     download_progress["error_kind"] = ""
 
 def _end_download_session():
     with _session_lock:
         _download_session["active"] = False
+    download_progress["phase"] = "idle"
+    download_progress["idle_seconds"] = 0
 
 # ─── Error classification ─────────────────────────────────────────────────────
 
@@ -415,29 +432,59 @@ async def lifespan(app: FastAPI):
 
     # ── Download-hang watchdog ─────────────────────────────────────────────────
     async def _download_watchdog():
-        """Background task: surfaces stalled downloads to the UI after 30s of silence."""
-        POLL_INTERVAL = 15
+        """Background task: surfaces stalled downloads to the UI after 30s of
+        silence (only once at least one tqdm update has arrived — before that
+        we consider the download to be in the 'connecting' phase, which can
+        legitimately take a while on slow links / TLS handshakes / DNS)."""
+        POLL_INTERVAL = 5
         STALL_THRESHOLD = 30
+        CONNECTING_WARN_THRESHOLD = 45   # only warn about a slow connect after this long
         _warned_this_stall = False
+        _warned_slow_connect = False
         while True:
             await asyncio.sleep(POLL_INTERVAL)
-            if download_progress.get("status") in ("downloading", "stalled"):
-                idle = _time.monotonic() - _last_tqdm_update_ts
-                if idle >= STALL_THRESHOLD:
-                    if not _warned_this_stall:
-                        _warned_this_stall = True
+            status = download_progress.get("status")
+            if status in ("downloading", "stalled"):
+                now = _time.monotonic()
+                session_started = _download_session.get("started_ts", 0.0)
+                elapsed = int(now - session_started) if session_started > 0 else 0
+                download_progress["elapsed_seconds"] = elapsed
+
+                had_first_byte = _last_tqdm_update_ts > 0
+                if had_first_byte:
+                    idle = int(now - _last_tqdm_update_ts)
+                    download_progress["idle_seconds"] = idle
+                    if idle >= STALL_THRESHOLD:
+                        if not _warned_this_stall:
+                            _warned_this_stall = True
+                            emit_log(
+                                f"Download appears stalled — no progress in {idle}s. "
+                                "Check network/firewall.",
+                                "warn"
+                            )
+                        download_progress["status"] = "stalled"
+                        download_progress["phase"] = "stalled"
+                    else:
+                        if _warned_this_stall:
+                            _warned_this_stall = False
+                        download_progress["phase"] = "downloading"
+                        # If we previously flipped status to "stalled" but data has resumed,
+                        # the InterceptTqdm.update() path already flipped status back to
+                        # "downloading", so nothing to do here.
+                else:
+                    # No tqdm updates yet — we're still in connect/handshake/DNS phase.
+                    download_progress["idle_seconds"] = 0
+                    download_progress["phase"] = "connecting"
+                    if elapsed >= CONNECTING_WARN_THRESHOLD and not _warned_slow_connect:
+                        _warned_slow_connect = True
                         emit_log(
-                            "Download appears stalled — no progress in 30s. "
-                            "Check network/firewall.",
+                            f"Still connecting to Hugging Face after {elapsed}s — "
+                            "slow link or firewall may be involved.",
                             "warn"
                         )
-                    # Surface stall to UI so the banner turns yellow
-                    download_progress["status"] = "stalled"
-                else:
-                    if _warned_this_stall:
-                        _warned_this_stall = False
             else:
                 _warned_this_stall = False
+                _warned_slow_connect = False
 
     _watchdog_task = asyncio.create_task(_download_watchdog())
 
@@ -740,7 +787,7 @@ async def stream_progress(request: Request):
             if payload != last_payload:
                 yield f"data: {payload}\n\n"
                 last_payload = payload
-            is_active = download_progress["status"] == "downloading"
+            is_active = download_progress["status"] in ("downloading", "stalled")
             await asyncio.sleep(0.5 if is_active else 2.0)
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")

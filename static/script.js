@@ -991,6 +991,8 @@ const bibleCheckbox = document.getElementById('bible-text-mode');
     const downloadBanner = document.getElementById('download-progress-banner');
     const downloadBannerText = document.getElementById('download-progress-text');
     const downloadBannerDetail = document.getElementById('download-progress-detail');
+    const downloadBannerFile = document.getElementById('download-progress-file');
+    const downloadProgressFill = document.getElementById('download-progress-fill');
     let bannerFadeTimer = null;
 
     function formatBytes(bytes) {
@@ -1008,14 +1010,34 @@ const bibleCheckbox = document.getElementById('bible-text-mode');
         return `${Math.round(seconds)}s`;
     }
 
-    function showDownloadBanner(mainText, detailText, isStalled) {
+    function formatElapsed(seconds) {
+        if (!seconds || seconds <= 0) return '';
+        if (seconds >= 3600) return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
+        if (seconds >= 60) return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+        return `${seconds}s`;
+    }
+
+    function showDownloadBanner({ mainText, detailText, fileText, phase, pct }) {
         if (bannerFadeTimer) { clearTimeout(bannerFadeTimer); bannerFadeTimer = null; }
-        downloadBanner.classList.remove('hidden', 'fading-out', 'stalled');
-        if (isStalled) downloadBanner.classList.add('stalled');
+        downloadBanner.classList.remove('hidden', 'fading-out', 'stalled', 'connecting');
+        if (phase === 'stalled') downloadBanner.classList.add('stalled');
+        else if (phase === 'connecting') downloadBanner.classList.add('connecting');
+
         downloadBannerText.textContent = mainText;
         if (downloadBannerDetail) {
             downloadBannerDetail.textContent = detailText || '';
             downloadBannerDetail.style.display = detailText ? 'block' : 'none';
+        }
+        if (downloadBannerFile) {
+            downloadBannerFile.textContent = fileText || '';
+            downloadBannerFile.style.display = fileText ? 'block' : 'none';
+        }
+        if (downloadProgressFill && phase !== 'connecting') {
+            // For determinate phases, JS-set width takes effect. For connecting,
+            // the CSS rule applies `width: 35% !important` plus the indeterminate
+            // animation, so we don't touch it here.
+            const safePct = Math.max(0, Math.min(100, pct || 0));
+            downloadProgressFill.style.width = `${safePct}%`;
         }
     }
 
@@ -1023,8 +1045,24 @@ const bibleCheckbox = document.getElementById('bible-text-mode');
         downloadBanner.classList.add('fading-out');
         bannerFadeTimer = setTimeout(() => {
             downloadBanner.classList.add('hidden');
-            downloadBanner.classList.remove('fading-out', 'stalled');
+            downloadBanner.classList.remove('fading-out', 'stalled', 'connecting');
+            if (downloadProgressFill) downloadProgressFill.style.width = '0%';
         }, 400);
+    }
+
+    // Strip leading "(...)" annotations and any path components from tqdm's desc
+    // so the banner shows just the filename being fetched.
+    function shortFileLabel(desc) {
+        if (!desc) return '';
+        let s = String(desc).trim();
+        // Drop a leading "(…)" prefix that huggingface_hub sometimes prepends.
+        s = s.replace(/^\([^)]*\)\s*/, '');
+        // Keep only the trailing path component
+        const slash = s.lastIndexOf('/');
+        if (slash >= 0) s = s.slice(slash + 1);
+        // Truncate excessively long filenames
+        if (s.length > 60) s = s.slice(0, 28) + '…' + s.slice(-28);
+        return s;
     }
 
     // ─── Progress SSE (long-lived, auto-reconnects) ───────────────────────────
@@ -1051,31 +1089,60 @@ const bibleCheckbox = document.getElementById('bible-text-mode');
                 const transitioned = data.status !== prevStatus;
                 const isActive = data.status === 'downloading' || data.status === 'stalled';
                 const isStalled = data.status === 'stalled';
+                // phase is finer-grained than status; fall back to status if absent
+                // (older server build) so the UI degrades gracefully.
+                const phase = data.phase ||
+                    (isStalled ? 'stalled'
+                        : (data.bytes_done > 0 ? 'downloading' : 'connecting'));
 
                 if (isActive) {
                     const repoShort = (data.repo_id || '').replace('Qwen/', '');
                     const pctStr = progressState.pct > 0 ? ` — ${progressState.pct}%` : '';
-                    const mainText = repoShort
-                        ? `Downloading ${repoShort}${pctStr}`
-                        : `Downloading model${pctStr}`;
+                    let mainText;
+                    if (phase === 'connecting') {
+                        mainText = repoShort
+                            ? `Connecting to download ${repoShort}…`
+                            : 'Connecting to Hugging Face…';
+                    } else {
+                        mainText = repoShort
+                            ? `Downloading ${repoShort}${pctStr}`
+                            : `Downloading model${pctStr}`;
+                    }
 
+                    // Build the detail line — keep bytes/rate/ETA visible during
+                    // stalls so the user can see how far they got, and append a
+                    // "no data for Ns" note instead of replacing everything.
                     let detail = '';
-                    if (isStalled) {
-                        detail = 'Slow connection — still trying…';
+                    if (phase === 'connecting') {
+                        const elapsed = formatElapsed(data.elapsed_seconds);
+                        detail = elapsed
+                            ? `Waiting for first byte · ${elapsed} elapsed`
+                            : 'Waiting for first byte…';
                     } else if (data.bytes_done > 0) {
                         detail = formatBytes(data.bytes_done);
                         if (data.bytes_total > 0) detail += ` / ${formatBytes(data.bytes_total)}`;
                         if (data.rate_bps > 0) detail += ` · ${formatBytes(data.rate_bps)}/s`;
                         const eta = formatEta(data.eta_seconds);
                         if (eta) detail += ` · ~${eta} left`;
+                        const elapsed = formatElapsed(data.elapsed_seconds);
+                        if (elapsed) detail += ` · ${elapsed} elapsed`;
+                        if (isStalled && data.idle_seconds > 0) {
+                            detail += ` · no data for ${data.idle_seconds}s`;
+                        }
                     }
 
-                    if (isStalled) {
+                    const fileText = phase !== 'connecting'
+                        ? shortFileLabel(data.current_file)
+                        : '';
+
+                    if (phase === 'stalled') {
                         updateStatusBadge('stalled', `Stalled ${progressState.pct}%`);
+                    } else if (phase === 'connecting') {
+                        updateStatusBadge('downloading', 'Connecting…');
                     } else {
                         updateStatusBadge('downloading', `Downloading… ${progressState.pct}%`);
                     }
-                    showDownloadBanner(mainText, detail, isStalled);
+                    showDownloadBanner({ mainText, detailText: detail, fileText, phase, pct: progressState.pct });
                 } else if (data.status === 'ready') {
                     updateStatusBadge('ready', 'Model Ready');
                     if (transitioned && (prevStatus === 'downloading' || prevStatus === 'stalled')) {
