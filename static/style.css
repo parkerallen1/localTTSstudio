@@ -533,6 +533,69 @@ button:focus-visible {
     color: var(--danger);
 }
 
+.chapter-toggle-btn {
+    background: transparent;
+    border: 1px solid var(--glass-border);
+    color: var(--text-muted);
+    font-size: 0.75rem;
+    cursor: pointer;
+    padding: 0.15rem 0.5rem;
+    border-radius: 4px;
+    margin-left: auto;
+    margin-right: 0.5rem;
+    line-height: 1.4;
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.chapter-toggle-btn:hover {
+    background: rgba(255, 255, 255, 0.08);
+    color: var(--text-main);
+}
+
+.chapter-toggle-btn.active {
+    background: rgba(88, 166, 255, 0.15);
+    border-color: var(--primary);
+    color: var(--primary);
+}
+
+.paragraph-card.is-chapter {
+    border-left: 3px solid var(--primary);
+}
+
+/* Insert-paragraph affordance between cards */
+.insert-row {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 1rem;
+    opacity: 0.35;
+    transition: opacity 0.15s;
+}
+
+.insert-row:hover {
+    opacity: 1;
+}
+
+.insert-para-btn {
+    background: var(--primary);
+    border: none;
+    color: #fff;
+    width: 1.5rem;
+    height: 1.5rem;
+    border-radius: 50%;
+    font-size: 1rem;
+    line-height: 1;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.15s;
+}
+
+.insert-para-btn:hover {
+    background: var(--primary-hover);
+}
+
 .paragraph-text {
     font-size: 0.95rem;
     line-height: 1.5;

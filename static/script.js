@@ -7,6 +7,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const btnGenerateAll = document.getElementById('btn-generate-all');
     const btnStopGeneration = document.getElementById('btn-stop-generation');
     const btnDownloadAll = document.getElementById('btn-download-all');
+    const btnCopyChapters = document.getElementById('btn-copy-chapters');
     const modelTypeSelect = document.getElementById('model-type-select');
     const speakerSelect = document.getElementById('speaker-select');
     const voiceDesignPrompt = document.getElementById('voice-design-prompt');
@@ -202,6 +203,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const newProfileText = document.getElementById('new-profile-text');
 
     let paragraphsData = [];
+    let insertSeq = 0; // monotonic counter for unique ids on inserted paragraphs
     let currentProjectId = null;
     let hasUnsavedChanges = false;
     let autoSaveTimer = null;
@@ -293,7 +295,8 @@ document.addEventListener('DOMContentLoaded', () => {
             paragraphs: paragraphsData.map(p => ({
                 id: p.id,
                 text: p.text,
-                hasAudio: p.status === 'done'
+                hasAudio: p.status === 'done',
+                isChapter: p.chapter
             }))
         };
         await fetch(`/api/projects/${currentProjectId}`, {
@@ -361,7 +364,8 @@ const bibleCheckbox = document.getElementById('bible-text-mode');
                 text: p.text,
                 status: p.hasAudio ? 'done' : 'idle',
                 audioBlob: null,
-                audioUrl: p.hasAudio ? `/api/projects/${projectId}/audio/${p.id}` : null
+                audioUrl: p.hasAudio ? `/api/projects/${projectId}/audio/${p.id}` : null,
+                chapter: !!p.isChapter
             }));
 
             // Restore raw textarea text (fall back to joining paragraphs for older projects)
@@ -580,7 +584,8 @@ const bibleCheckbox = document.getElementById('bible-text-mode');
             text: text,
             status: 'idle',
             audioBlob: null,
-            audioUrl: null
+            audioUrl: null,
+            chapter: false
         }));
 
         renderParagraphs();
@@ -599,8 +604,11 @@ const bibleCheckbox = document.getElementById('bible-text-mode');
         paragraphsList.innerHTML = '';
 
         paragraphsData.forEach((para, index) => {
+            // Insert affordance above each card
+            paragraphsList.appendChild(makeInsertRow(index));
+
             const card = document.createElement('div');
-            card.className = 'paragraph-card';
+            card.className = `paragraph-card${para.chapter ? ' is-chapter' : ''}`;
             card.id = para.id;
 
             card.innerHTML = `
@@ -609,6 +617,7 @@ const bibleCheckbox = document.getElementById('bible-text-mode');
                         <button class="reorder-btn" onclick="moveParagraph(${index}, -1)" ${index === 0 ? 'disabled' : ''} title="Move up">&#8593;</button>
                         <button class="reorder-btn" onclick="moveParagraph(${index}, 1)" ${index === paragraphsData.length - 1 ? 'disabled' : ''} title="Move down">&#8595;</button>
                     </div>
+                    <button class="chapter-toggle-btn ${para.chapter ? 'active' : ''}" onclick="toggleChapter(${index})" title="Mark this paragraph as a chapter start">&#9873; Chapter</button>
                     <button class="delete-para-btn" onclick="deleteParagraph(${index})" title="Remove paragraph">&times;</button>
                 </div>
                 <textarea class="paragraph-text-edit" oninput="handleEdit(${index}, this.value)" rows="3">${escapeHtml(para.text)}</textarea>
@@ -640,6 +649,16 @@ const bibleCheckbox = document.getElementById('bible-text-mode');
                 }, { once: true });
             }
         });
+
+        // Trailing insert affordance (append at the end)
+        paragraphsList.appendChild(makeInsertRow(paragraphsData.length));
+    }
+
+    function makeInsertRow(index) {
+        const row = document.createElement('div');
+        row.className = 'insert-row';
+        row.innerHTML = `<button class="insert-para-btn" onclick="insertParagraph(${index})" title="Insert a paragraph here">+</button>`;
+        return row;
     }
 
     function getStatusText(status) {
@@ -684,6 +703,36 @@ const bibleCheckbox = document.getElementById('bible-text-mode');
         if (newIndex < 0 || newIndex >= paragraphsData.length) return;
         [paragraphsData[index], paragraphsData[newIndex]] = [paragraphsData[newIndex], paragraphsData[index]];
         renderParagraphs();
+        markUnsaved();
+    };
+
+    // Insert a new empty paragraph before the given index (length = append at end)
+    window.insertParagraph = (index) => {
+        paragraphsData.splice(index, 0, {
+            id: `para-${Date.now()}-ins${insertSeq++}`,
+            text: '',
+            status: 'idle',
+            audioBlob: null,
+            audioUrl: null,
+            chapter: false
+        });
+        renderParagraphs();
+        paraCountSpan.textContent = paragraphsData.length;
+        paragraphsContainer.classList.remove('hidden');
+        updateDownloadButtonVisibility();
+        markUnsaved();
+    };
+
+    window.toggleChapter = (index) => {
+        const para = paragraphsData[index];
+        para.chapter = !para.chapter;
+        const card = document.getElementById(para.id);
+        if (card) {
+            card.classList.toggle('is-chapter', para.chapter);
+            const btn = card.querySelector('.chapter-toggle-btn');
+            if (btn) btn.classList.toggle('active', para.chapter);
+        }
+        updateDownloadButtonVisibility();
         markUnsaved();
     };
 
@@ -869,7 +918,108 @@ const bibleCheckbox = document.getElementById('bible-text-mode');
         } else {
             downloadOptions.classList.add('hidden');
         }
+        updateChaptersButtonState();
     }
+
+    function updateChaptersButtonState() {
+        if (!btnCopyChapters) return;
+        const allDone = paragraphsData.length > 0 && paragraphsData.every(p => p.status === 'done');
+        const hasChapters = paragraphsData.some(p => p.chapter);
+        const ready = allDone && hasChapters;
+        btnCopyChapters.disabled = !ready;
+        btnCopyChapters.style.opacity = ready ? '1' : '0.5';
+        if (!hasChapters) {
+            btnCopyChapters.title = 'Mark at least one paragraph as a chapter start';
+        } else if (!allDone) {
+            btnCopyChapters.title = 'All paragraphs must be Ready (generate audio first)';
+        } else {
+            btnCopyChapters.title = '';
+        }
+    }
+
+    function chapterTitle(text) {
+        const t = (text || '').trim();
+        const dot = t.indexOf('.');
+        return (dot === -1 ? t : t.slice(0, dot)).trim();
+    }
+
+    async function paragraphDuration(blob) {
+        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        try {
+            const decoded = await ctx.decodeAudioData(await blob.arrayBuffer());
+            return decoded.duration; // seconds
+        } finally {
+            ctx.close();
+        }
+    }
+
+    function copyToClipboard(text) {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            return navigator.clipboard.writeText(text);
+        }
+        // Fallback for non-secure contexts
+        return new Promise((resolve, reject) => {
+            try {
+                const ta = document.createElement('textarea');
+                ta.value = text;
+                ta.style.position = 'fixed';
+                ta.style.opacity = '0';
+                document.body.appendChild(ta);
+                ta.select();
+                document.execCommand('copy');
+                document.body.removeChild(ta);
+                resolve();
+            } catch (e) {
+                reject(e);
+            }
+        });
+    }
+
+    btnCopyChapters.addEventListener('click', async () => {
+        const originalText = btnCopyChapters.textContent;
+        btnCopyChapters.disabled = true;
+        btnCopyChapters.textContent = 'Building...';
+        try {
+            // Walk all paragraphs in order to compute cumulative start times,
+            // matching the merge (1s of silence between every segment).
+            const chapters = [];
+            let cursor = 0; // seconds
+            for (const para of paragraphsData) {
+                if (para.chapter) {
+                    chapters.push({ title: chapterTitle(para.text), start: Math.round(cursor) });
+                }
+                let blob = para.audioBlob;
+                if (!blob && para.audioUrl) {
+                    const r = await fetch(para.audioUrl);
+                    if (r.ok) {
+                        blob = await r.blob();
+                        para.audioBlob = blob; // cache
+                    }
+                }
+                if (blob) {
+                    cursor += await paragraphDuration(blob);
+                }
+                cursor += 1.0; // inter-segment silence inserted by /api/merge
+            }
+
+            if (chapters.length === 0) {
+                log('No chapters marked.', 'error');
+                return;
+            }
+
+            await copyToClipboard(JSON.stringify(chapters, null, 2));
+            log(`Chapters shortcode copied (${chapters.length} chapter(s)).`, 'ok');
+            btnCopyChapters.textContent = 'Copied!';
+            setTimeout(() => { btnCopyChapters.textContent = originalText; }, 1500);
+        } catch (error) {
+            console.error('Failed to build chapters shortcode:', error);
+            log(`Copy chapters failed: ${error.message}`, 'error');
+            btnCopyChapters.textContent = originalText;
+        } finally {
+            btnCopyChapters.disabled = false;
+            updateChaptersButtonState();
+        }
+    });
 
     btnDownloadAll.addEventListener('click', async () => {
         // Collect blobs — fetch from server if blob was not cached in memory
