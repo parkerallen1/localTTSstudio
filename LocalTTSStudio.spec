@@ -1,12 +1,19 @@
 # -*- mode: python ; coding: utf-8 -*-
+import glob
 from PyInstaller.utils.hooks import collect_all
 
 qwen_datas, qwen_binaries, qwen_hiddenimports = collect_all('qwen_tts')
 
+# Resolve the bundled torch libomp regardless of the venv's Python version
+_libomp_matches = glob.glob('venv/lib/python*/site-packages/torch/lib/libomp.dylib')
+if not _libomp_matches:
+    raise SystemExit("Could not find torch/lib/libomp.dylib under venv/ — is the venv set up?")
+_libomp = _libomp_matches[0]
+
 a = Analysis(
     ['app_launcher.py'],
     pathex=[],
-    binaries=[('ffmpeg', '.'), ('venv/lib/python3.10/site-packages/torch/lib/libomp.dylib', '.')] + qwen_binaries,
+    binaries=[('ffmpeg', '.'), (_libomp, '.')] + qwen_binaries,
     datas=[('static', 'static'), ('assets', 'assets')] + qwen_datas,
     hiddenimports=['main', 'huggingface_hub', 'huggingface_hub.utils', 'uvicorn', 'uvicorn.logging', 'uvicorn.loops.auto', 'uvicorn.loops.asyncio', 'uvicorn.protocols.http.auto', 'uvicorn.protocols.websockets.auto', 'starlette.background', 'rumps', 'AppKit', 'Foundation', 'objc', 'PyObjCTools'] + qwen_hiddenimports,
     hookspath=[],
