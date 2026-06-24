@@ -18,6 +18,16 @@ import asyncio
 import json
 import gc
 from pydub import AudioSegment
+
+def _ffmpeg_bin():
+    """Path to the ffmpeg binary — bundled when frozen, else on PATH."""
+    if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+        return os.path.join(sys._MEIPASS, 'ffmpeg')
+    return "ffmpeg"
+
+# Point pydub at the same ffmpeg the rest of the app uses, so FLAC decoding
+# works inside the frozen bundle (no system ffmpeg required).
+AudioSegment.converter = _ffmpeg_bin()
 from typing import List, Optional
 import requests
 import subprocess
@@ -1167,22 +1177,48 @@ async def save_para_audio(project_id: str, para_id: str, audio: UploadFile = Fil
     audio_dir = os.path.join(project_dir, "audio")
     os.makedirs(audio_dir, exist_ok=True)
     safe_para_id = "".join(c for c in para_id if c.isalnum() or c in "-_")
-    audio_path = os.path.join(audio_dir, f"{safe_para_id}.wav")
+    flac_path = os.path.join(audio_dir, f"{safe_para_id}.flac")
     content = await audio.read()
-    with open(audio_path, "wb") as f:
-        f.write(content)
+
+    def _encode_flac():
+        # Decode the uploaded audio (WAV from generation) and re-encode losslessly
+        # as FLAC — roughly half the size of WAV with bit-identical audio.
+        data, samplerate = sf.read(io.BytesIO(content))
+        sf.write(flac_path, data, samplerate, format="FLAC")
+
+    try:
+        await asyncio.to_thread(_encode_flac)
+    except Exception as e:
+        # If FLAC encoding fails for any reason, fall back to storing raw WAV so
+        # the user never loses a generation.
+        emit_log(f"FLAC encode failed for {safe_para_id}, storing WAV: {e}", "warn")
+        wav_path = os.path.join(audio_dir, f"{safe_para_id}.wav")
+        with open(wav_path, "wb") as f:
+            f.write(content)
+        return {"ok": True}
+
+    # Drop any stale WAV left over from before FLAC storage / a prior fallback.
+    stale_wav = os.path.join(audio_dir, f"{safe_para_id}.wav")
+    if os.path.exists(stale_wav):
+        os.remove(stale_wav)
     return {"ok": True}
 
 @app.get("/api/projects/{project_id}/audio/{para_id}")
 def get_para_audio(project_id: str, para_id: str):
     project_dir = _project_dir(project_id)
     safe_para_id = "".join(c for c in para_id if c.isalnum() or c in "-_")
-    audio_path = os.path.join(project_dir, "audio", f"{safe_para_id}.wav")
-    if not os.path.exists(audio_path):
-        raise HTTPException(status_code=404, detail="Audio not found")
-    if not os.path.realpath(audio_path).startswith(os.path.realpath(project_dir)):
-        raise HTTPException(status_code=403, detail="Access denied")
-    return FileResponse(audio_path, media_type="audio/wav")
+    audio_dir = os.path.join(project_dir, "audio")
+    # Prefer FLAC (current format); fall back to WAV for any unmigrated files.
+    candidates = [
+        (os.path.join(audio_dir, f"{safe_para_id}.flac"), "audio/flac"),
+        (os.path.join(audio_dir, f"{safe_para_id}.wav"), "audio/wav"),
+    ]
+    for audio_path, media_type in candidates:
+        if os.path.exists(audio_path):
+            if not os.path.realpath(audio_path).startswith(os.path.realpath(project_dir)):
+                raise HTTPException(status_code=403, detail="Access denied")
+            return FileResponse(audio_path, media_type=media_type)
+    raise HTTPException(status_code=404, detail="Audio not found")
 
 @app.post("/api/generate")
 async def generate_audio(
@@ -1338,15 +1374,14 @@ async def merge_audio(files: List[UploadFile] = File(...)):
             combined = AudioSegment.empty()
             silence = AudioSegment.silent(duration=1000)
             for idx, content in enumerate(file_contents):
-                temp_in = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
-                temp_in.write(content)
-                temp_in.flush()
-                temp_in.close()
-                segment = AudioSegment.from_wav(temp_in.name)
+                # Segments may be FLAC (fetched from storage) or WAV (freshly
+                # generated, still in memory). Sniff the format from magic bytes
+                # so WAV decodes natively and FLAC routes through ffmpeg.
+                fmt = "flac" if content[:4] == b"fLaC" else "wav"
+                segment = AudioSegment.from_file(io.BytesIO(content), format=fmt)
                 if idx > 0:
                     combined += silence
                 combined += segment
-                os.unlink(temp_in.name)
             temp_out = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
             temp_out.close()
             combined.export(temp_out.name, format="wav")
