@@ -1,4 +1,13 @@
 <!DOCTYPE html>
+<!--
+  Local TTS Studio — single-page UI markup.
+
+  The only HTML page in the app, served at "/" by the FastAPI backend (main.py).
+  All behavior lives in static/script.js (loaded at the bottom of <body>) and all
+  styling in static/style.css. Element IDs here are the contract script.js binds
+  to (e.g. #text-input, #btn-parse, #paragraphs-list, the #projects-modal /
+  #settings-modal dialogs) — renaming one means updating script.js too.
+-->
 <html lang="en">
 
 <head>

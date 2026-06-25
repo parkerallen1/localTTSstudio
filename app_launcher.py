@@ -1,3 +1,25 @@
+"""
+Local TTS Studio — desktop entrypoint / launcher.
+
+This is the script PyInstaller bundles as "Local TTS Studio.app" (see
+LocalTTSStudio.spec). It boots the FastAPI backend (main.py) and wraps it in a
+native-feeling macOS desktop experience around the browser-based UI.
+
+What it does, in order:
+  • Sets MKL/OpenMP env vars BEFORE torch is imported (must come first to avoid
+    libomp crashes in the frozen bundle).
+  • When frozen, redirects stdout/stderr to ~/.qwen_tts_studio/app.log (rotated
+    each launch) so the packaged app is debuggable.
+  • Enforces a single instance via a PID + HTTP-probe lock; if the app is already
+    running, it just opens the browser at URL and exits.
+  • Starts uvicorn serving the main.py app on 127.0.0.1:PORT (8001) on a
+    non-daemon thread, owning signal handling for a clean shutdown.
+  • Opens a temporary "loading" page, then the real UI once the server is up.
+  • Runs a macOS menu-bar app (rumps): status item, "Open in browser", and
+    "Quit", with graceful server teardown on exit.
+
+Note: the backend listens on 8001 here; main.py is otherwise transport-agnostic.
+"""
 import os
 os.environ['MKL_THREADING_LAYER'] = 'sequential'
 os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'

@@ -1,3 +1,7 @@
+"""Dev regression test: load the 0.6B CustomVoice model through the backend's
+get_tts_model() and generate one clip, guarding against the "probability tensor"
+generation error that this path previously hit. Exits non-zero on failure.
+Run directly: `python test_main_fix.py`."""
 import asyncio
 import sys
 from main import get_tts_model

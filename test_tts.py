@@ -1,3 +1,7 @@
+"""Dev smoke test (standalone): load the Qwen3-TTS 0.6B CustomVoice model
+directly via qwen_tts and generate a sample clip under both float16 and float32,
+to confirm the model loads and synthesizes on this machine. Bypasses the app
+backend. Run directly: `python test_tts.py`."""
 import torch
 import numpy as np
 import soundfile as sf

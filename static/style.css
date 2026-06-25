@@ -1,3 +1,13 @@
+/*
+ * Local TTS Studio — stylesheet.
+ *
+ * The single stylesheet for index.html. Implements the app's dark
+ * "glassmorphism" theme (GitHub-dark-inspired palette). All colors, radii, and
+ * other shared tokens are defined as CSS custom properties on :root below —
+ * prefer reusing those variables over hardcoding values so the theme stays
+ * consistent. Organized roughly: tokens → layout/panels → controls → paragraph
+ * cards → modals → activity log → models table.
+ */
 :root {
     --bg-color: #0d1117;
     --glass-bg: rgba(255, 255, 255, 0.03);

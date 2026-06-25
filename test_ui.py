@@ -1,3 +1,7 @@
+"""Dev smoke test: drive a headless Chrome (Selenium) against a running server
+at http://127.0.0.1:8000 to confirm the page loads and key UI elements
+(#text-input, selects) are present. Requires the app/server to be running
+separately and chromedriver installed. Run directly: `python test_ui.py`."""
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait

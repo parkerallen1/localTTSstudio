@@ -1,3 +1,30 @@
+/*
+ * Local TTS Studio — frontend logic.
+ *
+ * The single client-side script behind index.html. It talks to the FastAPI
+ * backend (main.py) over the JSON API and drives the whole UI. Everything runs
+ * inside one DOMContentLoaded handler; module-scoped state (paragraphsData,
+ * currentProjectId, etc.) lives at the top of that closure.
+ *
+ * Main responsibilities:
+ *   • Parsing — turn pasted Markdown into paragraph cards (see the "Parse text
+ *     area into paragraphs" handler). Strips Markdown markers (stripMarkdown),
+ *     drops the Time/Focus/Scriptures metadata block, names the project from the
+ *     first line, marks each `##` heading as a chapter start (except the
+ *     boilerplate headings in CHAPTER_EXCLUDE), and merges short lines together
+ *     (combineShortParagraphs). Bible-specific cleanup is opt-in (cleanTextBible).
+ *   • Generation — synthesize audio per paragraph or for all of them, with a
+ *     stop control and live status badges.
+ *   • Projects — auto-create/save/load projects via /api/projects; audio is
+ *     fetched from the server. The Open-project modal lists/loads/deletes them.
+ *   • Voice profiles & settings — manage CustomVoice profiles and the settings
+ *     modal (model size/type, model cache, diagnostics).
+ *   • Export — download merged audio (WAV/M4A) and copy a chapter shortcode.
+ *   • Activity log (SSE) and the in-app update flow.
+ *
+ * NOTE: this file is served as a static asset, so browsers cache it — hard-
+ * refresh after changes during development.
+ */
 document.addEventListener('DOMContentLoaded', () => {
     const textInput = document.getElementById('text-input');
     const btnParse = document.getElementById('btn-parse');

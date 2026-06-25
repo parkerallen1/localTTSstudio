@@ -1,4 +1,19 @@
 # -*- mode: python ; coding: utf-8 -*-
+#
+# PyInstaller build spec for "Local TTS Studio.app" (macOS).
+#
+# Bundles the desktop launcher (app_launcher.py) — which in turn imports the
+# FastAPI backend (main.py) — into a windowed .app. Notable bits:
+#   • Collects the qwen_tts package (model code) and bundles the ffmpeg binary
+#     plus torch's libomp.dylib (resolved by glob, so the venv's Python version
+#     doesn't matter).
+#   • Ships the web UI (static/) and assets/ as data files.
+#   • hiddenimports cover dynamically-loaded deps PyInstaller can't see (uvicorn
+#     loops/protocols, rumps/PyObjC for the menu bar, huggingface_hub, etc.).
+#   • Heavy unused libs are excluded to keep the bundle smaller.
+#
+# Build:  ./venv/bin/python -m PyInstaller LocalTTSStudio.spec --noconfirm
+# Output: dist/Local TTS Studio.app  (unsigned / not notarized).
 import glob
 from PyInstaller.utils.hooks import collect_all
 

@@ -1,3 +1,31 @@
+"""
+Local TTS Studio — backend server (FastAPI).
+
+The heart of the app: a local FastAPI server that serves the web UI (static/)
+and exposes the JSON API the frontend (static/script.js) calls. It loads
+Qwen3-TTS models on demand, synthesizes speech, and persists work as "projects"
+on disk.
+
+Responsibilities
+  • Model lifecycle — lazily load and cache Qwen3-TTS models (modes: Base
+    voice-cloning, CustomVoice, VoiceDesign; sizes: 0.6B / 1.7B), freeing the
+    previous model before loading another. See get_tts_model().
+  • Speech synthesis — POST /api/generate turns one paragraph of text into audio.
+  • Projects — CRUD over saved projects (raw text, settings, and per-paragraph
+    audio). Audio is stored as FLAC on disk (see migrate_audio_to_flac.py).
+  • Voice profiles — saved CustomVoice / cloning profiles under PROFILES_DIR.
+  • Audio export — merge per-paragraph clips into a single download, with
+    optional M4A conversion via the bundled ffmpeg (see _ffmpeg_bin()).
+  • Activity log — a ring buffer streamed to the UI over Server-Sent Events.
+  • Auto-update — check GitHub Releases (GITHUB_REPO) and self-update the frozen
+    .app. See /api/check_update and /api/do_update.
+
+Run context: started in a background thread by app_launcher.py (the desktop
+entrypoint). When frozen by PyInstaller, bundled files resolve under
+sys._MEIPASS and data lives in ~/.qwen_tts_studio; in dev, data lives in ./data
+(see DATA_DIR below). APP_VERSION is the single source of truth for the version
+and is what the in-app updater compares against the latest GitHub release.
+"""
 import os
 import sys
 import io

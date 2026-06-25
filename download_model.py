@@ -1,3 +1,7 @@
+"""Dev helper: pre-download the Qwen3-TTS 0.6B Base model into the local
+Hugging Face cache so the first real run doesn't have to. Picks MPS if available,
+else CPU. Not used by the app at runtime — the backend (main.py) downloads
+models on demand. Run directly: `python download_model.py`."""
 import sys
 print("starting script")
 from qwen_tts import Qwen3TTSModel
