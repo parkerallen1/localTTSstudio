@@ -578,7 +578,10 @@ const bibleCheckbox = document.getElementById('bible-text-mode');
             const trimmed = rawLine.trim();
             if (!trimmed) continue;
             const isChapter = /^##(?!#)\s+/.test(trimmed); // H2 only — not H1 (#) or H3+ (###)
-            let cleaned = cleanTextGeneral(stripMarkdown(trimmed));
+            const stripped = stripMarkdown(trimmed);
+            // Drop the QQT metadata block — the labels are constant, content varies.
+            if (/^(Time|Focus|Scriptures)\s*:/i.test(stripped)) continue;
+            let cleaned = cleanTextGeneral(stripped);
             if (bibleMode) cleaned = cleanTextBible(cleaned);
             cleaned = cleaned.trim();
             if (!cleaned) continue;
@@ -586,6 +589,8 @@ const bibleCheckbox = document.getElementById('bible-text-mode');
         }
 
         const rawParagraphs = combineShortParagraphs(items);
+        // The first paragraph is the title — always a chapter start.
+        if (rawParagraphs.length) rawParagraphs[0].chapter = true;
         const batchId = Date.now();
 
         revokeAllBlobUrls();
