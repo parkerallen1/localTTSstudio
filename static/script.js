@@ -421,13 +421,11 @@ const bibleCheckbox = document.getElementById('bible-text-mode');
             } else {
                 noProjectsMsg.classList.add('hidden');
                 projects.forEach(p => {
-                    const date = p.updated_at ? new Date(p.updated_at).toLocaleDateString() : '';
                     const item = document.createElement('div');
                     item.className = 'project-item' + (p.id === currentProjectId ? ' project-item-active' : '');
                     item.innerHTML = `
                         <div class="project-item-info">
                             <div class="project-item-name">${escapeHtml(p.name)}</div>
-                            <div class="project-item-meta">${p.para_count} paragraph(s) &middot; ${date}</div>
                         </div>
                         <div class="project-item-actions">
                             <button class="secondary-btn small-btn" onclick="loadProjectFromModal('${p.id}')">Open</button>
@@ -610,8 +608,15 @@ const bibleCheckbox = document.getElementById('bible-text-mode');
         updateDownloadButtonVisibility();
         log(`Parsed ${paragraphsData.length} paragraph(s). Click "Generate All" to start.`);
 
-        // Ensure a project exists for saving
+        // Use the first non-empty line (the document's title) as the project name.
+        const firstLine = rawText.split(/\n/).map(l => l.trim()).find(l => l.length > 0);
+        const derivedTitle = firstLine ? stripMarkdown(firstLine).replace(/[.\s]+$/, '').trim() : '';
+        if (derivedTitle) projectNameInput.value = derivedTitle;
+
+        // Ensure a project exists for saving (created with the derived title above).
         await ensureProject();
+        // If the project already existed, persist the renamed title too.
+        if (derivedTitle && currentProjectId) await saveCurrentProject();
         markUnsaved();
     });
 
