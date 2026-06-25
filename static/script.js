@@ -575,15 +575,17 @@ const bibleCheckbox = document.getElementById('bible-text-mode');
         for (const rawLine of rawText.split(/\n/)) {
             const trimmed = rawLine.trim();
             if (!trimmed) continue;
-            const isChapter = /^##(?!#)\s+/.test(trimmed); // H2 only — not H1 (#) or H3+ (###)
+            const isHeading = /^##(?!#)\s+/.test(trimmed); // H2 only — not H1 (#) or H3+ (###)
             const stripped = stripMarkdown(trimmed);
             // Drop the QQT metadata block — the labels are constant, content varies.
             if (/^(Time|Focus|Scriptures)\b[^:\n]{0,24}:/i.test(stripped)) continue;
+            // Boilerplate headings start their own paragraph but are NOT chapters.
+            const isChapter = isHeading && !CHAPTER_EXCLUDE.has(headingKey(stripped));
             let cleaned = cleanTextGeneral(stripped);
             if (bibleMode) cleaned = cleanTextBible(cleaned);
             cleaned = cleaned.trim();
             if (!cleaned) continue;
-            items.push({ text: cleaned, chapter: isChapter });
+            items.push({ text: cleaned, chapter: isChapter, heading: isHeading });
         }
 
         const rawParagraphs = combineShortParagraphs(items);
@@ -1487,12 +1489,10 @@ const bibleCheckbox = document.getElementById('bible-text-mode');
         globalStatusBadge.textContent = textContent;
     }
 
-    // Merge consecutive short paragraphs for smoother TTS prosody.
-    // Target: 250-325 chars. Order is preserved; long paragraphs pass through untouched.
-    // Merge short consecutive paragraphs. Operates on { text, chapter } items.
-    // A chapter heading always starts a fresh paragraph (never glued onto the
-    // previous one); following body text may still merge into it, and the
-    // resulting paragraph keeps the chapter flag.
+    // Merge short consecutive paragraphs. Operates on { text, chapter, heading } items.
+    // Any heading (H2) always starts a fresh paragraph (never glued onto the previous
+    // one); following body text may still merge into it, and the resulting paragraph
+    // keeps the heading's chapter flag.
     function combineShortParagraphs(items, minLen = 225, maxLen = 325) {
         const result = [];
         let buffer = null;
@@ -1501,8 +1501,8 @@ const bibleCheckbox = document.getElementById('bible-text-mode');
                 buffer = { ...item };
                 continue;
             }
-            // A chapter heading must begin its own paragraph.
-            if (item.chapter) {
+            // A heading must begin its own paragraph (whether or not it's a chapter).
+            if (item.heading) {
                 result.push(buffer);
                 buffer = { ...item };
                 continue;
@@ -1517,6 +1517,28 @@ const bibleCheckbox = document.getElementById('bible-text-mode');
         }
         if (buffer) result.push(buffer);
         return result;
+    }
+
+    // H2 headings whose text matches one of these are kept as paragraph breaks
+    // but are NOT marked as chapters (boilerplate section headers).
+    const CHAPTER_EXCLUDE = new Set([
+        'settle in',
+        'thought starter',
+        'reflection questions',
+        'humor break',
+        'bring the inspiration with you',
+    ]);
+
+    // Normalize a heading to a comparison key: drop emojis/markdown/punctuation,
+    // collapse whitespace, lowercase. e.g. "**🧘 Settle in**" -> "settle in".
+    function headingKey(text) {
+        return text
+            .replace(/\p{Extended_Pictographic}/gu, '')
+            .replace(/[\uFE0F\u200D\u20E3]/gu, "")
+            .replace(/[^\p{L}\p{N}\s]/gu, '')
+            .replace(/\s+/g, ' ')
+            .trim()
+            .toLowerCase();
     }
 
     // Strip Markdown markers from a single line so the TTS model reads the words,
