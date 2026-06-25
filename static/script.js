@@ -580,7 +580,7 @@ const bibleCheckbox = document.getElementById('bible-text-mode');
             const isChapter = /^##(?!#)\s+/.test(trimmed); // H2 only — not H1 (#) or H3+ (###)
             const stripped = stripMarkdown(trimmed);
             // Drop the QQT metadata block — the labels are constant, content varies.
-            if (/^(Time|Focus|Scriptures)\s*:/i.test(stripped)) continue;
+            if (/^(Time|Focus|Scriptures)\b[^:\n]{0,24}:/i.test(stripped)) continue;
             let cleaned = cleanTextGeneral(stripped);
             if (bibleMode) cleaned = cleanTextBible(cleaned);
             cleaned = cleaned.trim();
