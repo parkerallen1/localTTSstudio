@@ -564,28 +564,38 @@ const bibleCheckbox = document.getElementById('bible-text-mode');
 
     // Parse text area into paragraphs
     btnParse.addEventListener('click', async () => {
-        let text = textInput.value.trim();
-        if (!text) return;
+        const rawText = textInput.value.trim();
+        if (!rawText) return;
 
         const bibleCheckbox = document.getElementById('bible-text-mode');
-        text = cleanTextGeneral(text);
-        if (bibleCheckbox && bibleCheckbox.checked) {
-            text = cleanTextBible(text);
+        const bibleMode = bibleCheckbox && bibleCheckbox.checked;
+
+        // Parse line-by-line so Markdown H2 headings (## ) can mark chapter starts.
+        // Each line becomes { text, chapter }; Markdown markers are stripped so the
+        // TTS model never reads "##", "**", bullets, links, etc. aloud.
+        const items = [];
+        for (const rawLine of rawText.split(/\n/)) {
+            const trimmed = rawLine.trim();
+            if (!trimmed) continue;
+            const isChapter = /^##(?!#)\s+/.test(trimmed); // H2 only — not H1 (#) or H3+ (###)
+            let cleaned = cleanTextGeneral(stripMarkdown(trimmed));
+            if (bibleMode) cleaned = cleanTextBible(cleaned);
+            cleaned = cleaned.trim();
+            if (!cleaned) continue;
+            items.push({ text: cleaned, chapter: isChapter });
         }
 
-        // Split by newlines, filter empty, then merge short consecutive paragraphs
-        const splitParagraphs = text.split(/\n+/).map(p => p.trim()).filter(p => p.length > 0);
-        const rawParagraphs = combineShortParagraphs(splitParagraphs);
+        const rawParagraphs = combineShortParagraphs(items);
         const batchId = Date.now();
 
         revokeAllBlobUrls();
-        paragraphsData = rawParagraphs.map((text, index) => ({
+        paragraphsData = rawParagraphs.map((item, index) => ({
             id: `para-${batchId}-${index}`,
-            text: text,
+            text: item.text,
             status: 'idle',
             audioBlob: null,
             audioUrl: null,
-            chapter: false
+            chapter: item.chapter
         }));
 
         renderParagraphs();
@@ -1469,30 +1479,67 @@ const bibleCheckbox = document.getElementById('bible-text-mode');
 
     // Merge consecutive short paragraphs for smoother TTS prosody.
     // Target: 250-325 chars. Order is preserved; long paragraphs pass through untouched.
-    function combineShortParagraphs(paragraphs, minLen = 225, maxLen = 325) {
+    // Merge short consecutive paragraphs. Operates on { text, chapter } items.
+    // A chapter heading always starts a fresh paragraph (never glued onto the
+    // previous one); following body text may still merge into it, and the
+    // resulting paragraph keeps the chapter flag.
+    function combineShortParagraphs(items, minLen = 225, maxLen = 325) {
         const result = [];
-        let buffer = '';
-        for (const p of paragraphs) {
+        let buffer = null;
+        for (const item of items) {
             if (!buffer) {
-                buffer = p;
+                buffer = { ...item };
                 continue;
             }
-            const combined = buffer + ' ' + p;
-            if (buffer.length < minLen && combined.length <= maxLen) {
-                buffer = combined;
+            // A chapter heading must begin its own paragraph.
+            if (item.chapter) {
+                result.push(buffer);
+                buffer = { ...item };
+                continue;
+            }
+            const combined = buffer.text + ' ' + item.text;
+            if (buffer.text.length < minLen && combined.length <= maxLen) {
+                buffer.text = combined; // buffer.chapter preserved
             } else {
                 result.push(buffer);
-                buffer = p;
+                buffer = { ...item };
             }
         }
         if (buffer) result.push(buffer);
         return result;
     }
 
+    // Strip Markdown markers from a single line so the TTS model reads the words,
+    // not the syntax. Runs before cleanTextGeneral. Note: heading detection (## )
+    // happens before this, so removing the markers here is safe.
+    function stripMarkdown(line) {
+        // Unescape backslash-escaped punctuation (e.g. "Jerusalem\!" -> "Jerusalem!")
+        line = line.replace(/\\([\\!.,*_~`>#()\[\]-])/g, '$1');
+        // Heading markers (#, ##, ### ...) and blockquote markers (>).
+        // Match whether or not text follows, so a bare "###" line strips to empty.
+        line = line.replace(/^#{1,6}(\s+|$)/, '');
+        line = line.replace(/^>\s?/, '');
+        // List bullets (-, *, +) and ordered-list markers (1. ) at the start
+        line = line.replace(/^[-*+]\s+/, '');
+        line = line.replace(/^\d+\.\s+/, '');
+        // Links: [text](url) -> text
+        line = line.replace(/\[([^\]]+)\]\([^)]*\)/g, '$1');
+        // Bold / italic emphasis
+        line = line.replace(/\*\*([^*]+)\*\*/g, '$1');
+        line = line.replace(/__([^_]+)__/g, '$1');
+        line = line.replace(/\*([^*]+)\*/g, '$1');
+        line = line.replace(/_([^_]+)_/g, '$1');
+        // Any stray leftover emphasis markers
+        line = line.replace(/\*\*/g, '');
+        return line.trim();
+    }
+
     // General cleanup applied to all text
     function cleanTextGeneral(text) {
         // strip emojis and pictographs — they confuse the TTS model
         text = text.replace(/\p{Extended_Pictographic}/gu, '');
+        // strip leftover emoji modifiers: variation selector, ZWJ, keycap, skin tones
+        text = text.replace(/[\uFE0F\u200D\u20E3]|\p{Emoji_Modifier}/gu, "");
         text = text.replace(/[ \t]+/g, ' ');
 
         // Ending every line with a period
