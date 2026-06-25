@@ -34,7 +34,7 @@ import subprocess
 import time as _time
 from collections import deque
 
-APP_VERSION = "3.2.0" # Current application version
+APP_VERSION = "3.3.0" # Current application version
 GITHUB_REPO = "parkerallen1/localTTSstudio" # Actual repo for OTA updates
 
 # ─── Activity Log ─────────────────────────────────────────────────────────────
