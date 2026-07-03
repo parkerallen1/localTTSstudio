@@ -288,10 +288,41 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function revokeAllBlobUrls() {
         paragraphsData.forEach(p => {
+            (p.takes || []).forEach(t => {
+                if (t.url && t.url.startsWith('blob:')) URL.revokeObjectURL(t.url);
+            });
             if (p.audioUrl && p.audioUrl.startsWith('blob:')) {
                 URL.revokeObjectURL(p.audioUrl);
             }
         });
+    }
+
+    // ─── Takes (generation history per paragraph) ───────────────────────────
+    // Every generation is kept as a "take": { n, url, blob }. `n` is a
+    // persistent per-paragraph take number used in the server filename;
+    // n === 0 is the pre-takes single file stored under the bare paragraph id.
+    // para.audioUrl / para.audioBlob always mirror the active take so the
+    // export/merge code paths work unchanged.
+
+    function takeFileId(para, n) {
+        return n === 0 ? para.id : `${para.id}-t${n}`;
+    }
+
+    function setActiveTake(para, n) {
+        para.activeTake = n;
+        const take = (para.takes || []).find(t => t.n === n) || null;
+        para.audioUrl = take ? take.url : null;
+        para.audioBlob = take ? take.blob : null;
+    }
+
+    function removeTakeLocally(para, n) {
+        const idx = (para.takes || []).findIndex(t => t.n === n);
+        if (idx === -1) return;
+        const [take] = para.takes.splice(idx, 1);
+        if (take.url && take.url.startsWith('blob:')) URL.revokeObjectURL(take.url);
+        if (para.activeTake === n) {
+            setActiveTake(para, para.takes.length ? para.takes[para.takes.length - 1].n : null);
+        }
     }
 
     async function ensureProject() {
@@ -323,7 +354,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 id: p.id,
                 text: p.text,
                 hasAudio: p.status === 'done',
-                isChapter: p.chapter
+                isChapter: p.chapter,
+                takes: (p.takes || []).map(t => t.n),
+                activeTake: p.activeTake ?? null
             }))
         };
         await fetch(`/api/projects/${currentProjectId}`, {
@@ -335,25 +368,23 @@ document.addEventListener('DOMContentLoaded', () => {
         setSaveStatus('saved');
     }
 
-    async function autoSaveParagraphAudio(index, blob) {
+    async function autoSaveParagraphAudio(index, blob, takeN) {
         if (!currentProjectId) return;
         const para = paragraphsData[index];
         const formData = new FormData();
         formData.append('audio', blob, 'audio.wav');
-        const res = await fetch(`/api/projects/${currentProjectId}/audio/${para.id}`, {
+        const res = await fetch(`/api/projects/${currentProjectId}/audio/${takeFileId(para, takeN)}`, {
             method: 'POST',
             body: formData
         });
         if (!res.ok) {
-            // Audio file didn't land on disk — mark paragraph as failed so it
-            // doesn't get saved as hasAudio:true and show as "Ready" on reload
-            para.status = 'error';
-            para.audioBlob = null;
-            if (para.audioUrl && para.audioUrl.startsWith('blob:')) URL.revokeObjectURL(para.audioUrl);
-            para.audioUrl = null;
+            // The take didn't land on disk — drop it so it isn't persisted as
+            // playable and silently lost on reload. Older takes are unaffected.
+            removeTakeLocally(para, takeN);
+            para.status = para.takes.length ? 'done' : 'error';
             updateCardUi(index);
             updateDownloadButtonVisibility();
-            log(`Para ${index + 1} audio save failed — will need to regenerate.`, 'error');
+            log(`Para ${index + 1} audio save failed — take discarded, regenerate to retry.`, 'error');
             return;
         }
         await saveCurrentProject();
@@ -386,14 +417,30 @@ const bibleCheckbox = document.getElementById('bible-text-mode');
             }
 
             // Restore paragraphs — audio served from server
-            paragraphsData = (project.paragraphs || []).map(p => ({
-                id: p.id,
-                text: p.text,
-                status: p.hasAudio ? 'done' : 'idle',
-                audioBlob: null,
-                audioUrl: p.hasAudio ? `/api/projects/${projectId}/audio/${p.id}` : null,
-                chapter: !!p.isChapter
-            }));
+            paragraphsData = (project.paragraphs || []).map(p => {
+                // Older projects stored a single audio file per paragraph;
+                // surface it as take 0 (the bare-id filename).
+                const takeNs = (p.takes && p.takes.length) ? p.takes : (p.hasAudio ? [0] : []);
+                const takes = takeNs.map(n => ({
+                    n,
+                    url: `/api/projects/${projectId}/audio/${n === 0 ? p.id : `${p.id}-t${n}`}`,
+                    blob: null
+                }));
+                const activeTake = takeNs.includes(p.activeTake)
+                    ? p.activeTake
+                    : (takeNs.length ? takeNs[takeNs.length - 1] : null);
+                const active = takes.find(t => t.n === activeTake) || null;
+                return {
+                    id: p.id,
+                    text: p.text,
+                    status: takes.length ? 'done' : 'idle',
+                    audioBlob: null,
+                    audioUrl: active ? active.url : null,
+                    takes,
+                    activeTake,
+                    chapter: !!p.isChapter
+                };
+            });
 
             // Restore raw textarea text (fall back to joining paragraphs for older projects)
             textInput.value = project.rawText || paragraphsData.map(p => p.text).join('\n');
@@ -627,6 +674,8 @@ const bibleCheckbox = document.getElementById('bible-text-mode');
             status: 'idle',
             audioBlob: null,
             audioUrl: null,
+            takes: [],
+            activeTake: null,
             chapter: item.chapter
         }));
 
@@ -683,16 +732,19 @@ const bibleCheckbox = document.getElementById('bible-text-mode');
                         </button>
                     </div>
                 </div>
+                <div class="takes-row hidden" id="takes-${para.id}"></div>
             `;
             paragraphsList.appendChild(card);
+            renderTakesRow(index);
 
             // Handle broken audio (e.g. file deleted from disk after project was saved)
             const audioEl = document.getElementById(`audio-${para.id}`);
             if (audioEl && para.audioUrl) {
                 audioEl.addEventListener('error', () => {
-                    para.status = 'idle';
-                    para.audioUrl = null;
-                    para.audioBlob = null;
+                    // The active take's file is gone from disk — drop it and
+                    // fall back to the newest remaining take, if any.
+                    removeTakeLocally(para, para.activeTake);
+                    if (!(para.takes || []).length) para.status = 'idle';
                     updateCardUi(index);
                     updateDownloadButtonVisibility();
                 }, { once: true });
@@ -709,6 +761,46 @@ const bibleCheckbox = document.getElementById('bible-text-mode');
         row.innerHTML = `<button class="insert-para-btn" onclick="insertParagraph(${index})" title="Insert a paragraph here">+</button>`;
         return row;
     }
+
+    // Chips listing every kept take for a paragraph. Hidden until there is
+    // more than one take; labels are positional (Take 1 = oldest kept).
+    function renderTakesRow(index) {
+        const para = paragraphsData[index];
+        const row = document.getElementById(`takes-${para.id}`);
+        if (!row) return;
+        const takes = para.takes || [];
+        if (takes.length < 2) {
+            row.classList.add('hidden');
+            row.innerHTML = '';
+            return;
+        }
+        row.classList.remove('hidden');
+        row.innerHTML = takes.map((t, i) => `
+            <button class="take-chip ${t.n === para.activeTake ? 'active' : ''}" onclick="selectTake(${index}, ${t.n})" title="Use this take">
+                Take ${i + 1}<span class="take-chip-x" onclick="event.stopPropagation(); deleteTake(${index}, ${t.n})" title="Delete this take">&times;</span>
+            </button>`).join('');
+    }
+
+    window.selectTake = (index, n) => {
+        const para = paragraphsData[index];
+        if (para.activeTake === n) return;
+        setActiveTake(para, n);
+        updateCardUi(index);
+        markUnsaved();
+    };
+
+    window.deleteTake = (index, n) => {
+        const para = paragraphsData[index];
+        removeTakeLocally(para, n);
+        if (!para.takes.length && para.status === 'done') para.status = 'idle';
+        updateCardUi(index);
+        updateDownloadButtonVisibility();
+        if (currentProjectId) {
+            fetch(`/api/projects/${currentProjectId}/audio/${takeFileId(para, n)}`, { method: 'DELETE' })
+                .catch(e => console.warn('Take delete failed:', e));
+        }
+        markUnsaved();
+    };
 
     function getStatusText(status) {
         switch (status) {
@@ -737,7 +829,9 @@ const bibleCheckbox = document.getElementById('bible-text-mode');
 
     window.deleteParagraph = (index) => {
         const para = paragraphsData[index];
-        if (para.audioUrl) URL.revokeObjectURL(para.audioUrl);
+        (para.takes || []).forEach(t => {
+            if (t.url && t.url.startsWith('blob:')) URL.revokeObjectURL(t.url);
+        });
         paragraphsData.splice(index, 1);
         renderParagraphs();
         paraCountSpan.textContent = paragraphsData.length;
@@ -763,6 +857,8 @@ const bibleCheckbox = document.getElementById('bible-text-mode');
             status: 'idle',
             audioBlob: null,
             audioUrl: null,
+            takes: [],
+            activeTake: null,
             chapter: false
         });
         renderParagraphs();
@@ -796,10 +892,9 @@ const bibleCheckbox = document.getElementById('bible-text-mode');
             return;
         }
 
+        if (!para.takes) { para.takes = []; para.activeTake = null; }
         para.status = 'generating';
-        if (para.audioUrl) URL.revokeObjectURL(para.audioUrl);
-        para.audioBlob = null;
-        para.audioUrl = null;
+        // Existing takes stay listed and playable while the new one generates.
         updateCardUi(index);
 
         const textPreview = para.text.length > 60 ? para.text.substring(0, 60) + '...' : para.text;
@@ -865,34 +960,36 @@ const bibleCheckbox = document.getElementById('bible-text-mode');
 
             log(`[${index + 1}] Server responded OK — downloading audio blob...`);
             const blob = await response.blob();
-            para.audioBlob = blob;
 
-            if (para.audioUrl) URL.revokeObjectURL(para.audioUrl);
-
-            para.audioUrl = URL.createObjectURL(blob);
+            // Every generation becomes a new take; earlier ones are kept.
+            const takeN = para.takes.length ? Math.max(...para.takes.map(t => t.n)) + 1 : 1;
+            para.takes.push({ n: takeN, url: URL.createObjectURL(blob), blob });
+            setActiveTake(para, takeN);
             para.status = 'done';
             const genElapsed = ((performance.now() - genStartTime) / 1000).toFixed(1);
             const blobKB = (blob.size / 1024).toFixed(0);
             log(`[${index + 1}] Done — ${genElapsed}s round-trip, ${blobKB} KB`, 'ok');
 
             // Auto-save audio and project metadata
-            autoSaveParagraphAudio(index, blob).catch(e => console.warn('Auto-save failed:', e));
+            autoSaveParagraphAudio(index, blob, takeN).catch(e => console.warn('Auto-save failed:', e));
 
         } catch (error) {
             const genElapsed = ((performance.now() - genStartTime) / 1000).toFixed(1);
+            // A failed regeneration keeps the paragraph usable on its old takes.
+            const fallback = para.takes.length ? 'done' : null;
             if (error.name === 'AbortError' || error === 'timeout') {
                 const isTimeout = error === 'timeout' ||
                     (activeAbortController && activeAbortController.signal.reason === 'timeout');
-                para.status = 'error';
                 if (isTimeout) {
+                    para.status = fallback || 'error';
                     log(`[${index + 1}] Generation timed out after 30 min — check Activity Log and ~/.qwen_tts_studio/app.log`, 'error');
                 } else {
-                    para.status = 'idle';
+                    para.status = fallback || 'idle';
                     log(`[${index + 1}] Generation aborted by user after ${genElapsed}s`, 'warn');
                 }
             } else {
                 console.error('Generation failed:', error);
-                para.status = 'error';
+                para.status = fallback || 'error';
                 log(`[${index + 1}] FAILED after ${genElapsed}s — ${error.message}`, 'error');
             }
         } finally {
@@ -925,12 +1022,14 @@ const bibleCheckbox = document.getElementById('bible-text-mode');
 
         if (audioEl) {
             if (para.audioUrl) {
-                audioEl.src = para.audioUrl;
+                if (audioEl.getAttribute('src') !== para.audioUrl) audioEl.src = para.audioUrl;
                 audioEl.classList.remove('hidden');
             } else {
                 audioEl.classList.add('hidden');
             }
         }
+
+        renderTakesRow(index);
     }
 
     btnGenerateAll.addEventListener('click', async () => {

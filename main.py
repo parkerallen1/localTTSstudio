@@ -1248,6 +1248,22 @@ def get_para_audio(project_id: str, para_id: str):
             return FileResponse(audio_path, media_type=media_type)
     raise HTTPException(status_code=404, detail="Audio not found")
 
+@app.delete("/api/projects/{project_id}/audio/{para_id}")
+def delete_para_audio(project_id: str, para_id: str):
+    """Remove one stored audio file (used when the user discards a take)."""
+    project_dir = _project_dir(project_id)
+    safe_para_id = "".join(c for c in para_id if c.isalnum() or c in "-_")
+    audio_dir = os.path.join(project_dir, "audio")
+    removed = False
+    for ext in ("flac", "wav"):
+        audio_path = os.path.join(audio_dir, f"{safe_para_id}.{ext}")
+        if os.path.exists(audio_path):
+            if not os.path.realpath(audio_path).startswith(os.path.realpath(project_dir)):
+                raise HTTPException(status_code=403, detail="Access denied")
+            os.remove(audio_path)
+            removed = True
+    return {"ok": True, "removed": removed}
+
 @app.post("/api/generate")
 async def generate_audio(
     request: Request,

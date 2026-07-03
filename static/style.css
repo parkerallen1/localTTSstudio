@@ -702,6 +702,49 @@ button:focus-visible {
     height: 36px;
 }
 
+.takes-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    margin-top: 0.5rem;
+}
+
+.take-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    font-size: 0.8rem;
+    padding: 0.2rem 0.6rem;
+    border-radius: 999px;
+    border: 1px solid var(--glass-border);
+    background: rgba(255, 255, 255, 0.05);
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: background 0.2s ease, color 0.2s ease, border-color 0.2s ease;
+}
+
+.take-chip:hover {
+    color: var(--text-main);
+    border-color: var(--primary);
+}
+
+.take-chip.active {
+    color: var(--primary);
+    background: rgba(88, 166, 255, 0.12);
+    border-color: var(--primary);
+}
+
+.take-chip-x {
+    color: var(--text-muted);
+    font-size: 0.9rem;
+    line-height: 1;
+    padding: 0 0.1rem;
+}
+
+.take-chip-x:hover {
+    color: var(--danger);
+}
+
 .status-badge {
     font-size: 0.8rem;
     padding: 0.2rem 0.5rem;
