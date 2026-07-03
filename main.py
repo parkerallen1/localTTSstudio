@@ -52,6 +52,16 @@ def _ffmpeg_bin():
         return os.path.join(sys._MEIPASS, 'ffmpeg')
     return "ffmpeg"
 
+def _remove_quietly(*paths):
+    """Best-effort removal of temp files; ignores missing paths and OS errors."""
+    for p in paths:
+        if not p:
+            continue
+        try:
+            os.unlink(p)
+        except OSError:
+            pass
+
 from typing import List, Optional
 import requests
 import subprocess
@@ -555,6 +565,11 @@ async def lifespan(app: FastAPI):
 VALID_MODEL_SIZES = {"0.6B", "1.7B"}
 VALID_MODEL_TYPES = {"Base", "CustomVoice", "VoiceDesign"}
 
+# Longest single paragraph /api/generate will accept. The frontend combines
+# short lines into ~325-char paragraphs, so anything near this limit means a
+# runaway client — and generation time/VRAM grow with text length.
+MAX_GENERATE_TEXT_CHARS = 5000
+
 def _load_model_sync(model_id: str, device: str, dtype: torch.dtype):
     """Synchronous model load with retry on transient network errors."""
     from qwen_tts import Qwen3TTSModel
@@ -771,7 +786,6 @@ def _model_is_cached(size: str, model_type: str) -> bool:
     except OSError:
         pass
     return False
-    return False
 
 # ─── Settings ─────────────────────────────────────────────────────────────────
 
@@ -806,6 +820,12 @@ def save_settings(d: dict):
     os.replace(tmp, SETTINGS_FILE)
 
 app = FastAPI(lifespan=lifespan)
+
+# The server only ever binds to 127.0.0.1, but a malicious web page could still
+# reach it via DNS rebinding (a hostname that resolves to 127.0.0.1). Rejecting
+# unexpected Host headers closes that hole.
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost"])
 
 @app.get("/api/progress")
 async def stream_progress(request: Request):
@@ -945,6 +965,16 @@ async def download_model(request: Request):
         raise HTTPException(status_code=400, detail=f"Invalid size. Must be one of: {', '.join(VALID_MODEL_SIZES)}")
     if mtype not in VALID_MODEL_TYPES:
         raise HTTPException(status_code=400, detail=f"Invalid type. Must be one of: {', '.join(VALID_MODEL_TYPES)}")
+
+    # One download at a time — the progress banner and session state are global,
+    # and parallel snapshot_downloads would fight over bandwidth anyway.
+    with _session_lock:
+        already_downloading = _download_session["active"]
+    if already_downloading:
+        raise HTTPException(
+            status_code=409,
+            detail=f"A download is already in progress ({_download_session['repo_id']}). Wait for it to finish."
+        )
 
     model_id = f"Qwen/Qwen3-TTS-12Hz-{size}-{mtype}"
     # Use _prefetch_model so the currently loaded model is NOT evicted.
@@ -1123,6 +1153,13 @@ def _save_project(project_id: str, data: dict):
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
+def _safe_para_id(para_id: str) -> str:
+    """Reduce a client-supplied paragraph id to a safe filename stem."""
+    safe = "".join(c for c in para_id if c.isalnum() or c in "-_")
+    if not safe:
+        raise HTTPException(status_code=400, detail="Invalid paragraph ID")
+    return safe
+
 @app.get("/api/projects")
 def list_projects():
     result = []
@@ -1147,8 +1184,11 @@ def list_projects():
 
 @app.post("/api/projects")
 async def create_project(request: Request):
-    data = await request.json()
-    name = data.get("name", "Untitled Project")
+    try:
+        data = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="JSON body required")
+    name = str(data.get("name") or "Untitled Project").strip() or "Untitled Project"
     project_id = str(uuid.uuid4())
     now = _now_iso()
     project = {
@@ -1176,7 +1216,10 @@ async def update_project(project_id: str, request: Request):
     project = _load_project(project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
-    data = await request.json()
+    try:
+        data = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="JSON body required")
     project["name"] = data.get("name", project["name"])
     project["settings"] = data.get("settings", project.get("settings", {}))
     project["paragraphs"] = data.get("paragraphs", project.get("paragraphs", []))
@@ -1200,7 +1243,7 @@ async def save_para_audio(project_id: str, para_id: str, audio: UploadFile = Fil
         raise HTTPException(status_code=404, detail="Project not found")
     audio_dir = os.path.join(project_dir, "audio")
     os.makedirs(audio_dir, exist_ok=True)
-    safe_para_id = "".join(c for c in para_id if c.isalnum() or c in "-_")
+    safe_para_id = _safe_para_id(para_id)
     flac_path = os.path.join(audio_dir, f"{safe_para_id}.flac")
     content = await audio.read()
 
@@ -1230,7 +1273,7 @@ async def save_para_audio(project_id: str, para_id: str, audio: UploadFile = Fil
 @app.get("/api/projects/{project_id}/audio/{para_id}")
 def get_para_audio(project_id: str, para_id: str):
     project_dir = _project_dir(project_id)
-    safe_para_id = "".join(c for c in para_id if c.isalnum() or c in "-_")
+    safe_para_id = _safe_para_id(para_id)
     audio_dir = os.path.join(project_dir, "audio")
     # Prefer FLAC (current format); fall back to WAV for any unmigrated files.
     candidates = [
@@ -1248,7 +1291,7 @@ def get_para_audio(project_id: str, para_id: str):
 def delete_para_audio(project_id: str, para_id: str):
     """Remove one stored audio file (used when the user discards a take)."""
     project_dir = _project_dir(project_id)
-    safe_para_id = "".join(c for c in para_id if c.isalnum() or c in "-_")
+    safe_para_id = _safe_para_id(para_id)
     audio_dir = os.path.join(project_dir, "audio")
     removed = False
     for ext in ("flac", "wav"):
@@ -1279,6 +1322,18 @@ async def generate_audio(
         raise HTTPException(status_code=400, detail=f"Invalid model_size. Must be one of: {', '.join(VALID_MODEL_SIZES)}")
     if model_type not in VALID_MODEL_TYPES:
         raise HTTPException(status_code=400, detail=f"Invalid model_type. Must be one of: {', '.join(VALID_MODEL_TYPES)}")
+
+    text = text.strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Text is empty — nothing to synthesize.")
+    if len(text) > MAX_GENERATE_TEXT_CHARS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Text too long ({len(text)} chars). Split it into paragraphs of at most {MAX_GENERATE_TEXT_CHARS} chars."
+        )
+    # Clamp rather than reject — out-of-range values come from stale UIs, and the
+    # nearest sane value is always what the user meant.
+    temperature = min(max(temperature, 0.05), 1.5)
 
     text_preview = (text[:80] + "...") if len(text) > 80 else text
     emit_log(f"Generation requested — mode={model_type}, size={model_size}, text=\"{text_preview}\"", "info")
@@ -1372,22 +1427,23 @@ async def generate_audio(
                     cleanup_audio = True
                     emit_log(f"Starting VoiceClone inference — ad-hoc upload", "info")
 
-                wavs, sr = await asyncio.to_thread(
-                    tts_model.generate_voice_clone,
-                    text=text,
-                    language=language,
-                    ref_audio=temp_audio_path,
-                    ref_text=actual_ref_text,
-                    temperature=temperature,
-                    repetition_penalty=1.1,
-                    top_p=0.8,
-                    subtalker_temperature=temperature,
-                    max_new_tokens=max_new_tokens
-                )
-
-                # Cleanup temp file if it was a temporary upload
-                if cleanup_audio and os.path.exists(temp_audio_path):
-                    os.remove(temp_audio_path)
+                try:
+                    wavs, sr = await asyncio.to_thread(
+                        tts_model.generate_voice_clone,
+                        text=text,
+                        language=language,
+                        ref_audio=temp_audio_path,
+                        ref_text=actual_ref_text,
+                        temperature=temperature,
+                        repetition_penalty=1.1,
+                        top_p=0.8,
+                        subtalker_temperature=temperature,
+                        max_new_tokens=max_new_tokens
+                    )
+                finally:
+                    # Remove the ad-hoc upload whether or not inference succeeded
+                    if cleanup_audio and os.path.exists(temp_audio_path):
+                        os.remove(temp_audio_path)
             else:
                 raise HTTPException(status_code=400, detail=f"Unsupported model_type: {model_type}")
 
@@ -1493,64 +1549,48 @@ async def treat_audio(
     """
     Apply ffmpeg audio enhancements to an uploaded audio file and return the processed file.
     """
-    if not audio_file:
-        raise HTTPException(status_code=400, detail="No audio file provided.")
-        
-    valid_treatments = ["podcast", "warmth", "clear"]
-    if treatment_type not in valid_treatments:
-        raise HTTPException(status_code=400, detail=f"Invalid treatment type. Must be one of: {', '.join(valid_treatments)}")
+    # Filter chains: loudness-normalize every treatment; warmth/clear add a
+    # low/high shelf on top for coloration.
+    treatment_filters = {
+        "podcast": "loudnorm=I=-16:TP=-1.5:LRA=11",
+        "warmth": "bass=g=6:f=200,loudnorm=I=-16:TP=-1.5:LRA=11",
+        "clear": "treble=g=7:f=2000,loudnorm=I=-16:TP=-1.5:LRA=11",
+    }
+    if treatment_type not in treatment_filters:
+        raise HTTPException(status_code=400, detail=f"Invalid treatment type. Must be one of: {', '.join(treatment_filters)}")
 
     emit_log(f"Audio treatment requested: {treatment_type}", "info")
     treat_t0 = _time.monotonic()
 
+    temp_input = temp_output = None
     try:
-        # Save the uploaded file to a temporary location
         content = await audio_file.read()
         temp_input = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
         temp_input.write(content)
-        temp_input.flush()
         temp_input.close()
 
-        # Define output file
         temp_output = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
         temp_output.close()
 
-        # Determine the ffmpeg filter chain based on treatment_type
-        filter_chain = ""
-        if treatment_type == "podcast":
-            # Loudness normalization only — zero coloration, just standardized level
-            filter_chain = "loudnorm=I=-16:TP=-1.5:LRA=11"
-        elif treatment_type == "warmth":
-            # Strong low shelf (+6dB at 200Hz) for noticeably warm, full-bodied sound
-            filter_chain = "bass=g=6:f=200,loudnorm=I=-16:TP=-1.5:LRA=11"
-        elif treatment_type == "clear":
-            # Strong high shelf (+7dB at 2kHz) for noticeably crisp, airy, bright sound
-            filter_chain = "treble=g=7:f=2000,loudnorm=I=-16:TP=-1.5:LRA=11"
-
-        # Execute ffmpeg
-        ffmpeg_cmd = "ffmpeg"
-        if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
-            ffmpeg_cmd = os.path.join(sys._MEIPASS, 'ffmpeg')
-            
         command = [
-            ffmpeg_cmd,
+            _ffmpeg_bin(),
             "-y",  # Overwrite output file if it exists
             "-i", temp_input.name,
-            "-af", filter_chain,
+            "-af", treatment_filters[treatment_type],
             temp_output.name
         ]
-        
+
         process = await asyncio.create_subprocess_exec(
             *command,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )
-        stdout, stderr = await process.communicate()
-        
+        _, stderr = await process.communicate()
+
         if process.returncode != 0:
             ffmpeg_err = stderr.decode()[:200]
             emit_log(f"ffmpeg treatment failed (exit {process.returncode}): {ffmpeg_err}", "error")
-            raise RuntimeError(f"ffmpeg processing failed")
+            raise RuntimeError("ffmpeg processing failed")
 
         treat_elapsed = _time.monotonic() - treat_t0
         emit_log(f"Treatment '{treatment_type}' complete — {treat_elapsed:.1f}s", "ok")
@@ -1570,9 +1610,7 @@ async def treat_audio(
         import traceback
         traceback.print_exc()
         emit_log(f"Treatment FAILED after {treat_elapsed:.1f}s: {e}", "error")
-        # Ensure input file is cleaned up on error if it was created
-        if 'temp_input' in locals() and os.path.exists(temp_input.name):
-            os.unlink(temp_input.name)
+        _remove_quietly(temp_input and temp_input.name, temp_output and temp_output.name)
         raise HTTPException(status_code=500, detail=f"Failed to treat audio: {str(e)}")
 
 @app.post("/api/convert")
@@ -1591,21 +1629,17 @@ async def convert_audio(
     }
     cfg = format_config[output_format]
 
+    temp_input = temp_output = None
     try:
         content = await audio_file.read()
         temp_input = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
         temp_input.write(content)
-        temp_input.flush()
         temp_input.close()
 
         temp_output = tempfile.NamedTemporaryFile(delete=False, suffix=cfg["suffix"])
         temp_output.close()
 
-        ffmpeg_cmd = "ffmpeg"
-        if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
-            ffmpeg_cmd = os.path.join(sys._MEIPASS, 'ffmpeg')
-
-        command = [ffmpeg_cmd, "-y", "-i", temp_input.name] + cfg["codec"] + [temp_output.name]
+        command = [_ffmpeg_bin(), "-y", "-i", temp_input.name] + cfg["codec"] + [temp_output.name]
 
         process = await asyncio.create_subprocess_exec(
             *command,
@@ -1617,7 +1651,7 @@ async def convert_audio(
         os.unlink(temp_input.name)
 
         if process.returncode != 0:
-            print(f"ffmpeg convert error: {stderr.decode()}")
+            emit_log(f"ffmpeg convert failed (exit {process.returncode}): {stderr.decode()[:200]}", "error")
             raise RuntimeError("ffmpeg conversion failed")
 
         return FileResponse(
@@ -1628,14 +1662,17 @@ async def convert_audio(
         )
 
     except Exception as e:
-        if 'temp_input' in locals() and os.path.exists(temp_input.name):
-            os.unlink(temp_input.name)
+        _remove_quietly(temp_input and temp_input.name, temp_output and temp_output.name)
         raise HTTPException(status_code=500, detail=f"Failed to convert audio: {str(e)}")
 
 @app.get("/api/check_update")
 async def check_update():
     try:
-        response = await asyncio.to_thread(requests.get, f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest")
+        response = await asyncio.to_thread(
+            requests.get,
+            f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest",
+            timeout=10,
+        )
         response.raise_for_status()
         data = response.json()
         
@@ -1668,8 +1705,13 @@ async def check_update():
 
 @app.post("/api/do_update")
 async def do_update(download_url: str = Form(...)):
+    # Only install updates that actually come from GitHub — this endpoint
+    # downloads and executes a replacement app, so the source must be trusted.
+    allowed_prefixes = ("https://github.com/", "https://api.github.com/", "https://codeload.github.com/")
+    if not download_url.startswith(allowed_prefixes):
+        raise HTTPException(status_code=400, detail="Update URL must be a GitHub release URL.")
+
     try:
-        import shutil
         is_frozen = getattr(sys, 'frozen', False)
         
         if is_frozen:
@@ -1684,7 +1726,9 @@ async def do_update(download_url: str = Form(...)):
         zip_path = os.path.join(temp_dir, "update.zip")
         
         def _download_and_extract():
-            r = requests.get(download_url, stream=True)
+            # timeout guards connect + between-chunk reads; a large download can
+            # still take as long as it needs while data keeps flowing.
+            r = requests.get(download_url, stream=True, timeout=(10, 60))
             r.raise_for_status()
             with open(zip_path, 'wb') as f:
                 for chunk in r.iter_content(chunk_size=8192):
