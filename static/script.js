@@ -77,6 +77,8 @@ document.addEventListener('DOMContentLoaded', () => {
     let logMinimized = false;
     // Stores plain-text versions of all entries for clipboard copying
     const logPlainLines = [];
+    // Cap the on-screen log so day-long sessions don't grow the DOM forever
+    const MAX_LOG_DOM_ENTRIES = 500;
 
     function log(msg, level = 'info', source = 'client') {
         const entry = document.createElement('div');
@@ -96,9 +98,13 @@ document.addEventListener('DOMContentLoaded', () => {
         entry.appendChild(srcBadge);
         entry.appendChild(msgSpan);
         logEntries.appendChild(entry);
+        while (logEntries.children.length > MAX_LOG_DOM_ENTRIES) {
+            logEntries.removeChild(logEntries.firstChild);
+        }
 
         // Store plain-text line for "Copy all"
         logPlainLines.push(`${time} [${level.toUpperCase()}] ${msg}`);
+        if (logPlainLines.length > MAX_LOG_DOM_ENTRIES) logPlainLines.shift();
 
         // Auto-scroll unless user has scrolled up
         const atBottom = logEntries.scrollHeight - logEntries.scrollTop - logEntries.clientHeight < 40;
@@ -407,7 +413,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (s.modelSize && modelSizeSelect) modelSizeSelect.value = s.modelSize;
             if (s.speaker) speakerSelect.value = s.speaker;
             if (s.voiceDesignPrompt !== undefined) voiceDesignPrompt.value = s.voiceDesignPrompt;
-const bibleCheckbox = document.getElementById('bible-text-mode');
+            const bibleCheckbox = document.getElementById('bible-text-mode');
             if (bibleCheckbox && s.bibleMode !== undefined) bibleCheckbox.checked = s.bibleMode;
             applyModelTypeConfig();
             if (s.savedVoiceId) {
@@ -623,15 +629,12 @@ const bibleCheckbox = document.getElementById('bible-text-mode');
         generationStopped = false;
         const queue = paragraphsData
             .map((p, i) => i)
-            .filter(i => paragraphsData[i].status !== 'done');
+            .filter(i => paragraphsData[i].status !== 'done' && paragraphsData[i].text.trim());
 
-        function next() {
-            if (queue.length === 0 || generationStopped) return Promise.resolve();
-            const i = queue.shift();
-            return window.generateSingle(i).finally(() => next());
+        for (const i of queue) {
+            if (generationStopped) break;
+            await window.generateSingle(i);
         }
-
-        await next();
     }
 
     // Parse text area into paragraphs
@@ -831,6 +834,12 @@ const bibleCheckbox = document.getElementById('bible-text-mode');
         const para = paragraphsData[index];
         (para.takes || []).forEach(t => {
             if (t.url && t.url.startsWith('blob:')) URL.revokeObjectURL(t.url);
+            // Remove the stored file too so deleted paragraphs don't leave
+            // orphaned audio on disk.
+            if (currentProjectId) {
+                fetch(`/api/projects/${currentProjectId}/audio/${takeFileId(para, t.n)}`, { method: 'DELETE' })
+                    .catch(e => console.warn('Audio cleanup failed:', e));
+            }
         });
         paragraphsData.splice(index, 1);
         renderParagraphs();
@@ -839,6 +848,7 @@ const bibleCheckbox = document.getElementById('bible-text-mode');
         if (paragraphsData.length === 0) {
             paragraphsContainer.classList.add('hidden');
         }
+        markUnsaved();
     };
 
     window.moveParagraph = (index, direction) => {
@@ -887,6 +897,10 @@ const bibleCheckbox = document.getElementById('bible-text-mode');
         if (para.status === 'generating') return;
 
         // Validate before committing to generation
+        if (!para.text.trim()) {
+            log(`Paragraph ${index + 1} is empty — type some text first.`, 'warn');
+            return;
+        }
         if (modelTypeSelect.value === 'Base' && !savedVoiceSelect.value) {
             log("Please select a saved voice profile first.", 'error');
             return;
