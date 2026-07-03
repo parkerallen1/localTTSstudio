@@ -1250,6 +1250,7 @@ def get_para_audio(project_id: str, para_id: str):
 
 @app.post("/api/generate")
 async def generate_audio(
+    request: Request,
     text: str = Form(...),
     language: str = Form("English"),
     model_size: str = Form("1.7B"),
@@ -1278,112 +1279,139 @@ async def generate_audio(
     if generation_lock.locked():
         emit_log("Waiting for previous generation to finish (MPS serialization lock)...", "warn")
 
-    try:
-        tts_model = await get_tts_model(model_size, model_type)
-    except Exception as e:
-        emit_log(f"Could not load model for generation: {e}", "error")
-        raise HTTPException(status_code=500, detail=str(e))
-
     async with generation_lock:
-      gen_t0 = _time.monotonic()
-      try:
-        # Generate speech based on requested model type
-        if model_type == "CustomVoice":
-            emit_log(f"Starting CustomVoice inference — speaker={speaker}, lang={language}", "info")
-            wavs, sr = await asyncio.to_thread(
-                tts_model.generate_custom_voice,
-                text=text,
-                language=language,
-                speaker=speaker,
-                instruct=instruct or None,
-                temperature=temperature,
-                repetition_penalty=1.1,
-                top_p=0.8,
-                subtalker_temperature=temperature
-            )
-        elif model_type == "VoiceDesign":
-            if not voice_design_prompt:
-                raise HTTPException(status_code=400, detail="voice_design_prompt is required for VoiceDesign models.")
-            emit_log(f"Starting VoiceDesign inference — prompt=\"{voice_design_prompt[:60]}\"", "info")
-            wavs, sr = await asyncio.to_thread(
-                tts_model.generate_voice_design,
-                text=text,
-                language=language,
-                instruct=voice_design_prompt,
-                temperature=temperature,
-                repetition_penalty=1.1,
-                top_p=0.8,
-                subtalker_temperature=temperature
-            )
-        elif model_type == "Base":
-            if profile_id:
-                # Load from saved profile
-                profiles = load_profiles()
-                profile = next((p for p in profiles if p["id"] == profile_id), None)
-                if not profile:
-                    emit_log(f"Profile {profile_id} not found.", "error")
-                    raise HTTPException(status_code=404, detail="Profile not found")
+        # The browser may have abandoned this request (refresh, retry, stop)
+        # while it sat in the queue — don't burn GPU time on audio nobody will
+        # receive. This is what turns a pile of retries into a pile of work.
+        if await request.is_disconnected():
+            emit_log(f"Client gone before generation started — skipping \"{text_preview}\"", "warn")
+            raise HTTPException(status_code=499, detail="Client disconnected")
 
-                temp_audio_path = profile["audio_path"]
-                actual_ref_text = profile["ref_text"]
-                cleanup_audio = False
-                emit_log(f"Starting VoiceClone inference — profile=\"{profile['name']}\"", "info")
+        # Model load/swap must happen under the generation lock: swapping frees
+        # the current model, which would crash an inference running on it.
+        try:
+            tts_model = await get_tts_model(model_size, model_type)
+        except Exception as e:
+            emit_log(f"Could not load model for generation: {e}", "error")
+            raise HTTPException(status_code=500, detail=str(e))
+
+        # Cap decoding relative to the text length. The codec runs at ~12
+        # tokens/sec of audio and speech is ~14 chars/sec, so len(text)*3 is
+        # roughly 3.5× the expected duration — enough for slow, pause-heavy
+        # reads, but a generation that misses its end-of-speech token stops in
+        # seconds instead of grinding to the 2048-token (~3 min audio) default.
+        max_new_tokens = min(2048, max(256, len(text) * 3))
+
+        gen_t0 = _time.monotonic()
+        try:
+            # Generate speech based on requested model type
+            if model_type == "CustomVoice":
+                emit_log(f"Starting CustomVoice inference — speaker={speaker}, lang={language}", "info")
+                wavs, sr = await asyncio.to_thread(
+                    tts_model.generate_custom_voice,
+                    text=text,
+                    language=language,
+                    speaker=speaker,
+                    instruct=instruct or None,
+                    temperature=temperature,
+                    repetition_penalty=1.1,
+                    top_p=0.8,
+                    subtalker_temperature=temperature,
+                    max_new_tokens=max_new_tokens
+                )
+            elif model_type == "VoiceDesign":
+                if not voice_design_prompt:
+                    raise HTTPException(status_code=400, detail="voice_design_prompt is required for VoiceDesign models.")
+                emit_log(f"Starting VoiceDesign inference — prompt=\"{voice_design_prompt[:60]}\"", "info")
+                wavs, sr = await asyncio.to_thread(
+                    tts_model.generate_voice_design,
+                    text=text,
+                    language=language,
+                    instruct=voice_design_prompt,
+                    temperature=temperature,
+                    repetition_penalty=1.1,
+                    top_p=0.8,
+                    subtalker_temperature=temperature,
+                    max_new_tokens=max_new_tokens
+                )
+            elif model_type == "Base":
+                if profile_id:
+                    # Load from saved profile
+                    profiles = load_profiles()
+                    profile = next((p for p in profiles if p["id"] == profile_id), None)
+                    if not profile:
+                        emit_log(f"Profile {profile_id} not found.", "error")
+                        raise HTTPException(status_code=404, detail="Profile not found")
+
+                    temp_audio_path = profile["audio_path"]
+                    actual_ref_text = profile["ref_text"]
+                    cleanup_audio = False
+                    emit_log(f"Starting VoiceClone inference — profile=\"{profile['name']}\"", "info")
+                else:
+                    # Use uploaded ad-hoc files
+                    if not ref_text or not ref_audio:
+                        raise HTTPException(status_code=400, detail="ref_text and ref_audio (or profile_id) are required for Voice Cloning in Base models.")
+                    safe_name = os.path.basename(ref_audio.filename) if ref_audio.filename else "upload.wav"
+                    temp_audio_path = os.path.join(DATA_DIR, f"{uuid.uuid4()}_{safe_name}")
+                    os.makedirs(DATA_DIR, exist_ok=True)
+                    with open(temp_audio_path, "wb") as f:
+                        f.write(await ref_audio.read())
+                    actual_ref_text = ref_text
+                    cleanup_audio = True
+                    emit_log(f"Starting VoiceClone inference — ad-hoc upload", "info")
+
+                wavs, sr = await asyncio.to_thread(
+                    tts_model.generate_voice_clone,
+                    text=text,
+                    language=language,
+                    ref_audio=temp_audio_path,
+                    ref_text=actual_ref_text,
+                    temperature=temperature,
+                    repetition_penalty=1.1,
+                    top_p=0.8,
+                    subtalker_temperature=temperature,
+                    max_new_tokens=max_new_tokens
+                )
+
+                # Cleanup temp file if it was a temporary upload
+                if cleanup_audio and os.path.exists(temp_audio_path):
+                    os.remove(temp_audio_path)
             else:
-                # Use uploaded ad-hoc files
-                if not ref_text or not ref_audio:
-                    raise HTTPException(status_code=400, detail="ref_text and ref_audio (or profile_id) are required for Voice Cloning in Base models.")
-                safe_name = os.path.basename(ref_audio.filename) if ref_audio.filename else "upload.wav"
-                temp_audio_path = os.path.join(DATA_DIR, f"{uuid.uuid4()}_{safe_name}")
-                os.makedirs(DATA_DIR, exist_ok=True)
-                with open(temp_audio_path, "wb") as f:
-                    f.write(await ref_audio.read())
-                actual_ref_text = ref_text
-                cleanup_audio = True
-                emit_log(f"Starting VoiceClone inference — ad-hoc upload", "info")
+                raise HTTPException(status_code=400, detail=f"Unsupported model_type: {model_type}")
 
-            wavs, sr = await asyncio.to_thread(
-                tts_model.generate_voice_clone,
-                text=text,
-                language=language,
-                ref_audio=temp_audio_path,
-                ref_text=actual_ref_text,
-                temperature=temperature,
-                repetition_penalty=1.1,
-                top_p=0.8,
-                subtalker_temperature=temperature
+            gen_elapsed = _time.monotonic() - gen_t0
+
+            # Stream audio directly from memory — no temp file needed
+            audio_data = wavs[0]
+            duration_sec = len(audio_data) / sr if sr else 0
+            buffer = io.BytesIO()
+            sf.write(buffer, audio_data, sr, format="WAV")
+            buf_size = buffer.tell()
+            buffer.seek(0)
+
+            emit_log(
+                f"Generation complete — {gen_elapsed:.1f}s wall time, "
+                f"{duration_sec:.1f}s audio, {buf_size/1024:.0f} KB, sr={sr}",
+                "ok"
             )
+            return StreamingResponse(buffer, media_type="audio/wav", headers={"Content-Disposition": "attachment; filename=generated.wav"})
 
-            # Cleanup temp file if it was a temporary upload
-            if cleanup_audio and os.path.exists(temp_audio_path):
-                os.remove(temp_audio_path)
-        else:
-            raise HTTPException(status_code=400, detail=f"Unsupported model_type: {model_type}")
-
-        gen_elapsed = _time.monotonic() - gen_t0
-
-        # Stream audio directly from memory — no temp file needed
-        audio_data = wavs[0]
-        duration_sec = len(audio_data) / sr if sr else 0
-        buffer = io.BytesIO()
-        sf.write(buffer, audio_data, sr, format="WAV")
-        buf_size = buffer.tell()
-        buffer.seek(0)
-
-        emit_log(
-            f"Generation complete — {gen_elapsed:.1f}s wall time, "
-            f"{duration_sec:.1f}s audio, {buf_size/1024:.0f} KB, sr={sr}",
-            "ok"
-        )
-        return StreamingResponse(buffer, media_type="audio/wav", headers={"Content-Disposition": "attachment; filename=generated.wav"})
-
-      except HTTPException:
-        raise
-      except Exception as e:
-        gen_elapsed = _time.monotonic() - gen_t0
-        import traceback
-        traceback.print_exc()
-        emit_log(f"Generation FAILED after {gen_elapsed:.1f}s: {e}", "error")
-        raise HTTPException(status_code=500, detail=str(e))
+        except HTTPException:
+            raise
+        except Exception as e:
+            gen_elapsed = _time.monotonic() - gen_t0
+            import traceback
+            traceback.print_exc()
+            emit_log(f"Generation FAILED after {gen_elapsed:.1f}s: {e}", "error")
+            raise HTTPException(status_code=500, detail=str(e))
+        finally:
+            # Return cached GPU allocator blocks between generations — long
+            # sessions otherwise creep up in memory until MPS starts swapping.
+            gc.collect()
+            if hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+                torch.mps.empty_cache()
+            elif torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
 @app.post("/api/merge")
 async def merge_audio(files: List[UploadFile] = File(...)):
