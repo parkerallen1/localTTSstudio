@@ -45,7 +45,6 @@ import torch
 import asyncio
 import json
 import gc
-from pydub import AudioSegment
 
 def _ffmpeg_bin():
     """Path to the ffmpeg binary — bundled when frozen, else on PATH."""
@@ -53,9 +52,6 @@ def _ffmpeg_bin():
         return os.path.join(sys._MEIPASS, 'ffmpeg')
     return "ffmpeg"
 
-# Point pydub at the same ffmpeg the rest of the app uses, so FLAC decoding
-# works inside the frozen bundle (no system ffmpeg required).
-AudioSegment.converter = _ffmpeg_bin()
 from typing import List, Optional
 import requests
 import subprocess
@@ -1443,20 +1439,33 @@ async def merge_audio(files: List[UploadFile] = File(...)):
             file_contents.append(await file.read())
 
         def _merge_sync():
-            combined = AudioSegment.empty()
-            silence = AudioSegment.silent(duration=1000)
+            # Segments may be FLAC (fetched from storage) or WAV (freshly
+            # generated, still in memory) — libsndfile decodes both natively,
+            # so no ffmpeg/ffprobe binary is needed here.
+            chunks = []
+            sr_out = None
+            ch_out = None
             for idx, content in enumerate(file_contents):
-                # Segments may be FLAC (fetched from storage) or WAV (freshly
-                # generated, still in memory). Sniff the format from magic bytes
-                # so WAV decodes natively and FLAC routes through ffmpeg.
-                fmt = "flac" if content[:4] == b"fLaC" else "wav"
-                segment = AudioSegment.from_file(io.BytesIO(content), format=fmt)
+                data, sr = sf.read(io.BytesIO(content), dtype="float32", always_2d=True)
+                if sr_out is None:
+                    sr_out, ch_out = sr, data.shape[1]
+                if data.shape[1] != ch_out:
+                    data = np.tile(data.mean(axis=1, keepdims=True), (1, ch_out))
+                if sr != sr_out:
+                    n_out = int(round(data.shape[0] * sr_out / sr))
+                    x_old = np.linspace(0.0, 1.0, data.shape[0], endpoint=False)
+                    x_new = np.linspace(0.0, 1.0, n_out, endpoint=False)
+                    data = np.stack(
+                        [np.interp(x_new, x_old, data[:, c]) for c in range(ch_out)],
+                        axis=1
+                    ).astype(np.float32)
                 if idx > 0:
-                    combined += silence
-                combined += segment
+                    chunks.append(np.zeros((sr_out, ch_out), dtype=np.float32))  # 1 s pause
+                chunks.append(data)
+            merged = np.concatenate(chunks, axis=0)
             temp_out = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
             temp_out.close()
-            combined.export(temp_out.name, format="wav")
+            sf.write(temp_out.name, merged, sr_out, format="WAV", subtype="PCM_16")
             return temp_out.name
 
         out_path = await asyncio.to_thread(_merge_sync)
