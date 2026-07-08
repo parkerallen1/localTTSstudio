@@ -589,8 +589,11 @@ document.addEventListener('DOMContentLoaded', () => {
         if (e.key === 'Escape') {
             const saveProfileModal = document.getElementById('save-profile-modal');
             const settingsModal = document.getElementById('settings-modal');
+            const tutorialModal = document.getElementById('tutorial-modal');
             if (settingsModal && !settingsModal.classList.contains('hidden')) {
                 settingsModal.classList.add('hidden');
+            } else if (tutorialModal && !tutorialModal.classList.contains('hidden')) {
+                tutorialModal.classList.add('hidden');
             } else if (projectsModal && !projectsModal.classList.contains('hidden')) {
                 projectsModal.classList.add('hidden');
             } else if (saveProfileModal && !saveProfileModal.classList.contains('hidden')) {
@@ -721,7 +724,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     <button class="chapter-toggle-btn ${para.chapter ? 'active' : ''}" onclick="toggleChapter(${index})" title="Mark this paragraph as a chapter start">&#9873; Chapter</button>
                     <button class="delete-para-btn" onclick="deleteParagraph(${index})" title="Remove paragraph">&times;</button>
                 </div>
-                <textarea class="paragraph-text-edit" oninput="handleEdit(${index}, this.value)" rows="3">${escapeHtml(para.text)}</textarea>
+                <textarea class="paragraph-text-edit" oninput="handleEdit(${index}, this.value); autosizeTextarea(this)" rows="1">${escapeHtml(para.text)}</textarea>
                 <div class="card-actions">
                     <span class="status-badge ${para.status}" id="status-${para.id}">
                         ${getStatusText(para.status)}
@@ -756,7 +759,25 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // Trailing insert affordance (append at the end)
         paragraphsList.appendChild(makeInsertRow(paragraphsData.length));
+
+        // Callers may unhide #paragraphs-container right after this call, and
+        // scrollHeight is 0 while hidden — so size the textareas a frame later.
+        requestAnimationFrame(autosizeAllTextareas);
     }
+
+    // Grow a paragraph textarea to fit its content (they don't scroll).
+    // Exposed on window because cards use inline on* handlers.
+    window.autosizeTextarea = (ta) => {
+        ta.style.height = 'auto';
+        ta.style.height = (ta.scrollHeight + 2) + 'px'; // +2 = top/bottom border
+    };
+
+    function autosizeAllTextareas() {
+        paragraphsList.querySelectorAll('.paragraph-text-edit').forEach(window.autosizeTextarea);
+    }
+
+    // Re-wrap on window resize (narrower window → more lines per paragraph)
+    window.addEventListener('resize', autosizeAllTextareas);
 
     function makeInsertRow(index) {
         const row = document.createElement('div');
@@ -1822,6 +1843,19 @@ document.addEventListener('DOMContentLoaded', () => {
     // Close on backdrop click
     settingsModal.addEventListener('click', (e) => {
         if (e.target === settingsModal) settingsModal.classList.add('hidden');
+    });
+
+    // ─── Tutorial modal ───────────────────────────────────────────────────────
+
+    const tutorialModal = document.getElementById('tutorial-modal');
+    document.getElementById('btn-open-tutorial').addEventListener('click', () => {
+        tutorialModal.classList.remove('hidden');
+    });
+    document.getElementById('btn-close-tutorial-modal').addEventListener('click', () => {
+        tutorialModal.classList.add('hidden');
+    });
+    tutorialModal.addEventListener('click', (e) => {
+        if (e.target === tutorialModal) tutorialModal.classList.add('hidden');
     });
 
     // ─── Settings: Defaults tab ───────────────────────────────────────────────

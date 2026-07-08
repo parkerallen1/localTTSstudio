@@ -660,8 +660,10 @@ button:focus-visible {
     background: transparent;
     border: 1px solid transparent;
     border-radius: 4px;
-    padding: 0;
-    margin: 0;
+    /* Constant padding (offset by negative margin) so the JS autosize height
+       stays correct on hover/focus — only colors change between states. */
+    padding: 0.5rem;
+    margin: -0.5rem;
     width: 100%;
     min-height: auto;
     resize: none;
@@ -673,9 +675,7 @@ button:focus-visible {
 .paragraph-text-edit:hover,
 .paragraph-text-edit:focus {
     background: rgba(0, 0, 0, 0.2);
-    border: 1px solid var(--glass-border);
-    padding: 0.5rem;
-    margin: -0.5rem;
+    border-color: var(--glass-border);
     outline: none;
 }
 
@@ -869,6 +869,47 @@ button:focus-visible {
     flex: 1;
     min-height: 0;
     overflow-y: auto;
+}
+
+/* Tutorial modal */
+.tutorial-modal-content {
+    max-width: 640px;
+}
+
+.tutorial-step {
+    display: flex;
+    gap: 0.9rem;
+    align-items: flex-start;
+}
+
+.tutorial-step-num {
+    flex-shrink: 0;
+    width: 1.8rem;
+    height: 1.8rem;
+    border-radius: 50%;
+    background: var(--primary);
+    color: #fff;
+    font-weight: 700;
+    font-size: 0.9rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.tutorial-step p {
+    margin: 0.25rem 0 0;
+    font-size: 0.9rem;
+    line-height: 1.5;
+    color: var(--text-muted);
+}
+
+.tutorial-step kbd {
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid var(--glass-border);
+    border-radius: 4px;
+    padding: 0.05rem 0.35rem;
+    font-size: 0.85em;
+    font-family: inherit;
 }
 
 /* Activity Log */
