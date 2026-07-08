@@ -36,6 +36,7 @@ FLAC under the project → user downloads a merged WAV/M4A via `/api/merge` +
 | `static/script.js` | All frontend logic (parsing, generation, projects, export, settings). One big `DOMContentLoaded` closure. |
 | `static/style.css` | Dark glassmorphism theme. Shared tokens in `:root`. |
 | `LocalTTSStudio.spec` | PyInstaller build spec for the `.app`. |
+| `SERVER.md` | How to run the app as a shared remote generation server (token auth + tunnel). |
 | `migrate_audio_to_flac.py` | One-time WAV→FLAC migration for existing projects. |
 | `download_model.py`, `test_*.py` | Dev helpers / ad-hoc smoke tests (not run by the app). |
 | `ffmpeg` | Bundled binary used for FLAC decode and M4A conversion. |
@@ -52,6 +53,10 @@ Each source file also has a header comment explaining its role — start there.
 - **Models:** modes `Base` (voice cloning), `CustomVoice`, `VoiceDesign`; sizes
   `0.6B` / `1.7B`. One model is held at a time; the previous is freed on switch.
 - **Port:** the launcher serves on `127.0.0.1:8001`.
+- **Remote generation:** if `settings.json` has `remote_server_url`,
+  `/api/generate` is forwarded there (bearer-token auth) instead of loading a
+  model locally. Setting `QWEN_TTS_SERVER_TOKEN` runs an instance in server
+  mode: all `/api/*` routes require that token. See `SERVER.md`.
 
 ## Dev workflow
 

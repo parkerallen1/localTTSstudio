@@ -794,6 +794,10 @@ _DEFAULT_SETTINGS = {
     "preferred_model_size": "0.6B",
     "preferred_model_type": "CustomVoice",
     "auto_preload_on_start": False,
+    # When remote_server_url is set, /api/generate is forwarded there instead
+    # of loading a model locally (see Settings → Remote in the UI).
+    "remote_server_url": "",
+    "remote_server_token": "",
 }
 
 def load_settings() -> dict:
@@ -821,11 +825,37 @@ def save_settings(d: dict):
 
 app = FastAPI(lifespan=lifespan)
 
-# The server only ever binds to 127.0.0.1, but a malicious web page could still
-# reach it via DNS rebinding (a hostname that resolves to 127.0.0.1). Rejecting
-# unexpected Host headers closes that hole.
+# ─── Remote server mode ───────────────────────────────────────────────────────
+# Set QWEN_TTS_SERVER_TOKEN to run this app as a shared generation server:
+# every /api/* request must then carry "Authorization: Bearer <token>".
+# Desktop instances point at such a server via Settings → Remote, which
+# forwards only /api/generate — projects/profiles/export stay on the client.
+SERVER_TOKEN = os.environ.get("QWEN_TTS_SERVER_TOKEN", "").strip()
+SERVER_MODE = bool(SERVER_TOKEN)
+
+# The desktop app only ever binds to 127.0.0.1, but a malicious web page could
+# still reach it via DNS rebinding (a hostname that resolves to 127.0.0.1).
+# Rejecting unexpected Host headers closes that hole. In server mode requests
+# arrive through a tunnel under its public hostname, so the Host check is
+# dropped — the bearer-token middleware below is the gate instead.
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
-app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost"])
+app.add_middleware(
+    TrustedHostMiddleware,
+    allowed_hosts=["*"] if SERVER_MODE else ["127.0.0.1", "localhost"],
+)
+
+if SERVER_MODE:
+    import hmac as _hmac
+    from fastapi.responses import JSONResponse as _JSONResponse
+
+    @app.middleware("http")
+    async def _require_server_token(request: Request, call_next):
+        if request.url.path.startswith("/api/"):
+            auth = request.headers.get("authorization", "")
+            supplied = auth[7:] if auth.lower().startswith("bearer ") else ""
+            if not _hmac.compare_digest(supplied, SERVER_TOKEN):
+                return _JSONResponse(status_code=401, content={"detail": "Missing or invalid access token."})
+        return await call_next(request)
 
 @app.get("/api/progress")
 async def stream_progress(request: Request):
@@ -1056,9 +1086,68 @@ async def update_settings(request: Request):
             raise HTTPException(status_code=400, detail="auto_preload_on_start must be a boolean")
         current["auto_preload_on_start"] = v
 
+    if "remote_server_url" in body:
+        v = body["remote_server_url"]
+        if not isinstance(v, str):
+            raise HTTPException(status_code=400, detail="remote_server_url must be a string")
+        v = v.strip().rstrip("/")
+        if v and not (v.startswith("http://") or v.startswith("https://")):
+            raise HTTPException(status_code=400, detail="remote_server_url must start with http:// or https:// (or be empty)")
+        current["remote_server_url"] = v
+
+    if "remote_server_token" in body:
+        v = body["remote_server_token"]
+        if not isinstance(v, str):
+            raise HTTPException(status_code=400, detail="remote_server_token must be a string")
+        current["remote_server_token"] = v.strip()
+
     save_settings(current)
-    emit_log(f"Settings updated: {current}", "info")
+    # Don't echo the token into the activity log
+    loggable = {k: ("•••" if k == "remote_server_token" and current[k] else current[k]) for k in current}
+    emit_log(f"Settings updated: {loggable}", "info")
     return current
+
+@app.get("/api/health")
+def health():
+    """Liveness check. In server mode this is token-gated like every /api/*
+    route, so a 200 from here proves both the URL and the token are right —
+    that's exactly what the Settings → Remote "Test Connection" button uses."""
+    return {"status": "ok", "version": APP_VERSION, "server_mode": SERVER_MODE}
+
+@app.post("/api/remote/test")
+async def test_remote_server(request: Request):
+    """Check reachability + auth of a remote generation server. Tests the
+    URL/token in the request body (so the UI can test before saving), falling
+    back to the saved settings."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    settings = load_settings()
+    url = (body.get("url") or settings.get("remote_server_url") or "").strip().rstrip("/")
+    token = (body.get("token") or settings.get("remote_server_token") or "").strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="No remote server URL to test")
+
+    def _probe():
+        return requests.get(f"{url}/api/health", headers={"Authorization": f"Bearer {token}"}, timeout=10)
+
+    try:
+        resp = await asyncio.to_thread(_probe)
+    except requests.exceptions.RequestException as e:
+        return {"ok": False, "error": f"Unreachable: {e.__class__.__name__}"}
+    if resp.status_code == 401:
+        return {"ok": False, "error": "Server reachable, but it rejected the access token."}
+    if resp.status_code != 200:
+        return {"ok": False, "error": f"Server returned HTTP {resp.status_code}"}
+    try:
+        data = resp.json()
+    except Exception:
+        return {"ok": False, "error": "Server responded, but not with a Local TTS Studio health payload."}
+    result = {"ok": True, "version": data.get("version"), "server_mode": bool(data.get("server_mode"))}
+    if not result["server_mode"]:
+        result["warning"] = "That server is not running in server mode — it may be someone's local instance."
+    return result
 
 # Mount statics
 static_dir = os.path.join(os.path.dirname(__file__), "static")
@@ -1303,6 +1392,93 @@ def delete_para_audio(project_id: str, para_id: str):
             removed = True
     return {"ok": True, "removed": removed}
 
+async def _generate_via_remote(
+    remote_url: str, token: str, *, text, language, model_size, model_type,
+    speaker, voice_design_prompt, ref_text, ref_audio, profile_id, instruct, temperature
+):
+    """Forward a generation request to a remote server (Settings → Remote).
+
+    Voice-clone profiles live on THIS machine, so a profile_id is resolved
+    locally and its reference audio/text are uploaded with the request — the
+    server never needs our profile library."""
+    form = {
+        "text": text,
+        "language": language,
+        "model_size": model_size,
+        "model_type": model_type,
+        "speaker": speaker,
+        "temperature": str(temperature),
+    }
+    if voice_design_prompt:
+        form["voice_design_prompt"] = voice_design_prompt
+    if instruct:
+        form["instruct"] = instruct
+
+    files = None
+    file_handle = None
+    if model_type == "Base":
+        if profile_id:
+            profile = next((p for p in load_profiles() if p["id"] == profile_id), None)
+            if not profile:
+                emit_log(f"Profile {profile_id} not found.", "error")
+                raise HTTPException(status_code=404, detail="Profile not found")
+            if not os.path.exists(profile["audio_path"]):
+                raise HTTPException(status_code=404, detail=f"Reference audio for profile \"{profile['name']}\" is missing on disk.")
+            form["ref_text"] = profile["ref_text"]
+            file_handle = open(profile["audio_path"], "rb")
+            files = {"ref_audio": (os.path.basename(profile["audio_path"]), file_handle, "audio/wav")}
+        elif ref_audio is not None and ref_text:
+            files = {"ref_audio": (ref_audio.filename or "upload.wav", await ref_audio.read(), ref_audio.content_type or "audio/wav")}
+            form["ref_text"] = ref_text
+        else:
+            raise HTTPException(status_code=400, detail="ref_text and ref_audio (or profile_id) are required for Voice Cloning in Base models.")
+
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+    emit_log(f"Forwarding generation to remote server {remote_url} …", "info")
+    gen_t0 = _time.monotonic()
+
+    def _post():
+        # Long read timeout: the server responds only after inference finishes,
+        # and its first request may also download the model.
+        return requests.post(
+            f"{remote_url}/api/generate",
+            data=form, files=files, headers=headers,
+            timeout=(10, 3600), stream=True,
+        )
+
+    try:
+        resp = await asyncio.to_thread(_post)
+    except requests.exceptions.RequestException as e:
+        emit_log(f"Remote server unreachable: {e.__class__.__name__}", "error")
+        raise HTTPException(
+            status_code=502,
+            detail="Remote generation server unreachable. Check the URL in Settings → Remote, or clear it to generate locally.",
+        )
+    finally:
+        if file_handle:
+            file_handle.close()
+
+    if resp.status_code != 200:
+        if resp.status_code == 401:
+            detail = "The remote server rejected the access token. Check it in Settings → Remote."
+        else:
+            try:
+                detail = resp.json().get("detail", "")[:300] or f"Remote server returned HTTP {resp.status_code}"
+            except Exception:
+                detail = f"Remote server returned HTTP {resp.status_code}"
+        resp.close()
+        emit_log(f"Remote generation failed ({resp.status_code}): {detail}", "error")
+        raise HTTPException(status_code=resp.status_code if resp.status_code >= 400 else 502, detail=detail)
+
+    gen_elapsed = _time.monotonic() - gen_t0
+    emit_log(f"Remote generation complete — {gen_elapsed:.1f}s round trip", "ok")
+    return StreamingResponse(
+        resp.iter_content(chunk_size=65536),
+        media_type="audio/wav",
+        headers={"Content-Disposition": "attachment; filename=generated.wav"},
+        background=BackgroundTask(resp.close),
+    )
+
 @app.post("/api/generate")
 async def generate_audio(
     request: Request,
@@ -1337,6 +1513,18 @@ async def generate_audio(
 
     text_preview = (text[:80] + "...") if len(text) > 80 else text
     emit_log(f"Generation requested — mode={model_type}, size={model_size}, text=\"{text_preview}\"", "info")
+
+    # Remote generation: if a server URL is configured, forward instead of
+    # loading a model here. Server-mode instances never forward (no loops).
+    _settings = load_settings()
+    _remote_url = (_settings.get("remote_server_url") or "").strip().rstrip("/")
+    if _remote_url and not SERVER_MODE:
+        return await _generate_via_remote(
+            _remote_url, (_settings.get("remote_server_token") or "").strip(),
+            text=text, language=language, model_size=model_size, model_type=model_type,
+            speaker=speaker, voice_design_prompt=voice_design_prompt, ref_text=ref_text,
+            ref_audio=ref_audio, profile_id=profile_id, instruct=instruct, temperature=temperature,
+        )
 
     global generation_lock
     if generation_lock is None:

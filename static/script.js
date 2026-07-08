@@ -1871,6 +1871,10 @@ document.addEventListener('DOMContentLoaded', () => {
             if (sizeEl && data.preferred_model_size) sizeEl.value = data.preferred_model_size;
             if (typeEl && data.preferred_model_type) typeEl.value = data.preferred_model_type;
             if (autoEl && data.auto_preload_on_start != null) autoEl.checked = !!data.auto_preload_on_start;
+            const remoteUrlEl = document.getElementById('remote-server-url');
+            const remoteTokenEl = document.getElementById('remote-server-token');
+            if (remoteUrlEl && data.remote_server_url != null) remoteUrlEl.value = data.remote_server_url;
+            if (remoteTokenEl && data.remote_server_token != null) remoteTokenEl.value = data.remote_server_token;
         } catch (e) {
             // Settings endpoint not yet available — ignore silently
         }
@@ -1899,6 +1903,71 @@ document.addEventListener('DOMContentLoaded', () => {
         } catch (e) {
             msgEl.textContent = `Error: ${e.message}`;
             msgEl.classList.add('error');
+        }
+    });
+
+    // ─── Settings: Remote tab ─────────────────────────────────────────────────
+
+    document.getElementById('btn-save-remote').addEventListener('click', async () => {
+        const msgEl = document.getElementById('remote-save-msg');
+        msgEl.className = 'settings-save-msg';
+        msgEl.classList.remove('hidden');
+        msgEl.textContent = 'Saving…';
+        try {
+            const payload = {
+                remote_server_url: document.getElementById('remote-server-url').value.trim(),
+                remote_server_token: document.getElementById('remote-server-token').value.trim()
+            };
+            const res = await fetch('/api/settings', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            if (!res.ok) {
+                const err = await res.json().catch(() => ({}));
+                throw new Error(err.detail || `HTTP ${res.status}`);
+            }
+            msgEl.textContent = payload.remote_server_url
+                ? 'Saved — audio will now be generated on the remote server.'
+                : 'Saved — audio will be generated locally.';
+            msgEl.classList.add('ok');
+            setTimeout(() => { msgEl.classList.add('hidden'); }, 3000);
+        } catch (e) {
+            msgEl.textContent = `Error: ${e.message}`;
+            msgEl.classList.add('error');
+        }
+    });
+
+    document.getElementById('btn-test-remote').addEventListener('click', async () => {
+        const resultEl = document.getElementById('remote-test-result');
+        const url = document.getElementById('remote-server-url').value.trim();
+        if (!url) {
+            resultEl.style.color = '#fc8181';
+            resultEl.textContent = 'Enter a server URL first.';
+            return;
+        }
+        resultEl.style.color = '';
+        resultEl.textContent = 'Testing…';
+        try {
+            const res = await fetch('/api/remote/test', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ url, token: document.getElementById('remote-server-token').value.trim() })
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+            if (data.ok) {
+                resultEl.style.color = '#68d391';
+                resultEl.textContent = data.warning
+                    ? `Connected (v${data.version}) — ${data.warning}`
+                    : `Connected — server v${data.version}`;
+            } else {
+                resultEl.style.color = '#fc8181';
+                resultEl.textContent = data.error || 'Connection failed.';
+            }
+        } catch (e) {
+            resultEl.style.color = '#fc8181';
+            resultEl.textContent = `Test failed: ${e.message}`;
         }
     });
 

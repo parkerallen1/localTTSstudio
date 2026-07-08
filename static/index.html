@@ -311,6 +311,7 @@
             <!-- Tab bar -->
             <div class="settings-tabs">
                 <button class="settings-tab active" data-tab="defaults">Defaults</button>
+                <button class="settings-tab" data-tab="remote">Remote</button>
                 <button class="settings-tab" data-tab="models">Models</button>
                 <button class="settings-tab" data-tab="diagnostics">Diagnostics</button>
             </div>
@@ -339,6 +340,30 @@
                     </label>
                     <button id="btn-save-settings" class="primary-btn" style="width:100%;margin-top:8px;">Save</button>
                     <p id="settings-save-msg" class="settings-save-msg hidden"></p>
+                </div>
+            </div>
+
+            <!-- Tab: Remote generation server -->
+            <div class="settings-tab-panel" id="settings-tab-remote">
+                <div class="modal-body">
+                    <p class="hint" style="margin-top:0;">Generate audio on a shared server instead of this
+                        machine &mdash; useful if your Mac is slow. Only synthesis runs remotely; your projects,
+                        voice profiles, and exported audio all stay local. Leave the URL empty to generate
+                        locally.</p>
+                    <div class="setting-item wide-setting">
+                        <label for="remote-server-url">Server URL</label>
+                        <input type="text" id="remote-server-url" placeholder="https://tts-server.example.ts.net">
+                    </div>
+                    <div class="setting-item wide-setting">
+                        <label for="remote-server-token">Access Token</label>
+                        <input type="password" id="remote-server-token" placeholder="Paste the token you were given">
+                    </div>
+                    <div style="display:flex; align-items:center; gap:10px;">
+                        <button id="btn-test-remote" class="secondary-btn small-btn">Test Connection</button>
+                        <span id="remote-test-result" class="hint" style="margin:0;"></span>
+                    </div>
+                    <button id="btn-save-remote" class="primary-btn" style="width:100%;margin-top:8px;">Save</button>
+                    <p id="remote-save-msg" class="settings-save-msg hidden"></p>
                 </div>
             </div>
 
