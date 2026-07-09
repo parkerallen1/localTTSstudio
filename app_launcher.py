@@ -11,12 +11,13 @@ What it does, in order:
   • When frozen, redirects stdout/stderr to ~/.qwen_tts_studio/app.log (rotated
     each launch) so the packaged app is debuggable.
   • Enforces a single instance via a PID + HTTP-probe lock; if the app is already
-    running, it just opens the browser at URL and exits.
-  • Starts uvicorn serving the main.py app on 127.0.0.1:PORT (8001) on a
-    non-daemon thread, owning signal handling for a clean shutdown.
-  • Opens a temporary "loading" page, then the real UI once the server is up.
-  • Runs a macOS menu-bar app (rumps): status item, "Open in browser", and
-    "Quit", with graceful server teardown on exit.
+    running, it activates that instance and exits.
+  • Starts uvicorn serving the main.py app on 127.0.0.1:PORT (8001, override
+    with QWEN_TTS_PORT for dev) on a non-daemon thread, owning signal handling
+    for a clean shutdown.
+  • Opens a native app window (pywebview / WKWebView) showing a loading screen,
+    then the real UI once the server is up. Closing the window quits the app —
+    there is no menu-bar icon.
 
 Note: the backend listens on 8001 here; main.py is otherwise transport-agnostic.
 """
@@ -58,7 +59,6 @@ if getattr(sys, 'frozen', False):
     print("================================================================")
     sys.stdout.flush()
 import subprocess
-import tempfile
 import atexit
 import urllib.request
 
@@ -81,15 +81,16 @@ def _start_heartbeat():
 
 _start_heartbeat()
 
-PORT = 8001
+PORT = int(os.environ.get("QWEN_TTS_PORT", "8001"))
 URL = f"http://127.0.0.1:{PORT}"
 DATA_DIR = os.path.expanduser("~/.qwen_tts_studio")
-LOCK_PATH = os.path.join(DATA_DIR, "launcher.pid")
+# Non-default ports (dev runs) get their own lock so they can't clobber the
+# installed app's lock file.
+LOCK_PATH = os.path.join(DATA_DIR, "launcher.pid" if PORT == 8001 else f"launcher.{PORT}.pid")
 
 # Globals set up after start_server_thread() — used by shutdown()
 _server = None
 _server_thread = None
-_loading_page = None
 
 LOADING_HTML = """<!DOCTYPE html>
 <html lang="en">
@@ -142,7 +143,8 @@ LOADING_HTML = """<!DOCTYPE html>
   </p>
 </div>
 <script>
-const SERVER = "PLACEHOLDER_URL";
+// The launcher polls the server port from Python and swaps this page for the
+// real UI via window.load_url() — this script only animates the status text.
 const status = document.getElementById("status");
 const steps = [
   "Loading Python runtime...",
@@ -152,28 +154,15 @@ const steps = [
 ];
 let stepIdx = 0;
 
-const stepTimer = setInterval(() => {
+setInterval(() => {
   if (stepIdx < steps.length) {
     status.textContent = steps[stepIdx++];
   }
 }, 3000);
 
-const hintTimer = setTimeout(() => {
+setTimeout(() => {
   document.getElementById("log-hint").style.display = "block";
 }, 12000);
-
-const poller = setInterval(async () => {
-  try {
-    const r = await fetch(SERVER, { mode: "no-cors" });
-    clearInterval(poller);
-    clearInterval(stepTimer);
-    clearTimeout(hintTimer);
-    status.textContent = "Ready! Redirecting...";
-    setTimeout(() => { window.location.href = SERVER; }, 300);
-  } catch (e) {
-    // Server not up yet — keep polling
-  }
-}, 1000);
 </script>
 </body>
 </html>"""
@@ -208,7 +197,7 @@ def _release_lock():
 
 def acquire_single_instance():
     """Return normally if we own the lock. If another instance is already running,
-    open a browser tab pointing at it and exit silently."""
+    bring its window to the front and exit silently."""
     os.makedirs(DATA_DIR, exist_ok=True)
 
     for _attempt in range(2):
@@ -219,9 +208,13 @@ def acquire_single_instance():
                 pid = None
 
             if pid and _pid_alive(pid) and _http_probe(URL):
-                print(f"[LAUNCHER] Another instance already running (pid={pid}), opening browser and exiting.")
+                print(f"[LAUNCHER] Another instance already running (pid={pid}), activating it and exiting.")
                 sys.stdout.flush()
-                webbrowser.open(URL)
+                if getattr(sys, 'frozen', False):
+                    # Bring the running app's window to the front
+                    subprocess.run(["open", "-b", "com.localtts.studio"], check=False)
+                else:
+                    webbrowser.open(URL)
                 sys.exit(0)
 
             # Stale lock — remove and take ownership
@@ -259,14 +252,6 @@ def port_in_use():
         return s.connect_ex(("127.0.0.1", PORT)) == 0
 
 
-def write_loading_page():
-    html = LOADING_HTML.replace("PLACEHOLDER_URL", URL)
-    f = tempfile.NamedTemporaryFile(delete=False, suffix=".html", prefix="lts_loading_")
-    f.write(html.encode())
-    f.close()
-    return f.name
-
-
 def start_server_thread():
     """Import uvicorn + app, build an explicit Server instance, and start it on a
     non-daemon thread so we can signal it to stop gracefully."""
@@ -299,26 +284,22 @@ def start_server_thread():
 
 def shutdown():
     """Gracefully stop uvicorn (runs lifespan shutdown), clean up, and exit."""
-    global _server, _server_thread, _loading_page
+    global _server, _server_thread
     print("\n[LAUNCHER] Shutting down Local TTS Studio...")
     sys.stdout.flush()
 
     if _server is not None:
         _server.should_exit = True
         if _server_thread is not None:
-            _server_thread.join(timeout=10)
+            # Short grace period: the UI's SSE streams (activity log/progress)
+            # hold connections open, and with a dock icon the user can see the
+            # app lingering — force after 3s rather than uvicorn's leisurely wait.
+            _server_thread.join(timeout=3)
             if _server_thread.is_alive():
                 print("[LAUNCHER] Graceful shutdown timed out — forcing exit.")
                 sys.stdout.flush()
                 _server.force_exit = True
                 _server_thread.join(timeout=3)
-
-    if _loading_page:
-        try:
-            os.unlink(_loading_page)
-        except OSError:
-            pass
-        _loading_page = None
 
     _release_lock()
     print("[LAUNCHER] Shutdown complete.")
@@ -350,65 +331,41 @@ def _start_ota_watcher():
 
 
 # ---------------------------------------------------------------------------
-# macOS menu-bar app (rumps)
+# Native app window (pywebview / WKWebView)
 # ---------------------------------------------------------------------------
 
-def _menubar_icon_path():
-    """Return the path to the template icon, whether running frozen or from source."""
-    if getattr(sys, 'frozen', False):
-        base = sys._MEIPASS
-    else:
-        base = os.path.dirname(os.path.abspath(__file__))
-    return os.path.join(base, "assets", "menubar_iconTemplate.png")
+def run_webview():
+    """Open the app in a native window. Blocks until the window is closed,
+    then shuts the server down — closing the window quits the app."""
+    import webview
 
+    # Exported audio is saved via <a download> on a blob URL; this makes
+    # WKWebView hand those to a save dialog instead of ignoring them.
+    webview.settings['ALLOW_DOWNLOADS'] = True
 
-def run_menubar():
-    import rumps
+    window = webview.create_window(
+        "Local TTS Studio",
+        html=LOADING_HTML,
+        width=1280,
+        height=880,
+        min_size=(900, 600),
+        text_select=True,
+    )
 
-    class MenuBarApp(rumps.App):
-        def __init__(self):
-            icon = _menubar_icon_path()
-            super().__init__(
-                name="Local TTS Studio",
-                icon=icon if os.path.exists(icon) else None,
-                quit_button=None,
-            )
-            self.status_item = rumps.MenuItem("● Server running (8001)")
-            self.status_item.set_callback(None)  # non-clickable label
+    def _load_ui_when_ready():
+        while not port_in_use():
+            time.sleep(0.5)
+        print("[LAUNCHER] Server is up — loading UI in the app window")
+        sys.stdout.flush()
+        window.load_url(URL)
 
-            self.menu = [
-                self.status_item,
-                rumps.MenuItem("Open in browser", callback=self.open_browser),
-                None,  # separator
-                rumps.MenuItem("Quit Local TTS Studio", callback=self.quit_app),
-            ]
+    threading.Thread(target=_load_ui_when_ready, daemon=True, name="ui-loader").start()
 
-            # Poll once per second to clean up the loading page tmp file
-            self._lp_timer = rumps.Timer(self._check_loading_page, 1)
-            self._lp_timer.start()
-
-        def open_browser(self, _):
-            webbrowser.open(URL)
-
-        def quit_app(self, _):
-            self.status_item.title = "● Shutting down..."
-            # Run shutdown in a thread so the menu item title update can render,
-            # but the NSApp exit happens only after the thread finishes.
-            def _do():
-                shutdown()  # calls os._exit(0) internally
-            threading.Thread(target=_do, daemon=True).start()
-
-        def _check_loading_page(self, _timer):
-            global _loading_page
-            if _loading_page and port_in_use():
-                try:
-                    os.unlink(_loading_page)
-                except OSError:
-                    pass
-                _loading_page = None
-                self._lp_timer.stop()
-
-    MenuBarApp().run()
+    # Runs the Cocoa main loop; returns when the user closes the window
+    webview.start()
+    print("[LAUNCHER] Window closed by user.")
+    sys.stdout.flush()
+    shutdown()
 
 
 # ---------------------------------------------------------------------------
@@ -436,19 +393,7 @@ def run_tk_fallback():
         shutdown()
 
     root.protocol("WM_DELETE_WINDOW", lambda: _tk_quit(root))
-
-    def _check_loading_page():
-        global _loading_page
-        if _loading_page and port_in_use():
-            try:
-                os.unlink(_loading_page)
-            except OSError:
-                pass
-            _loading_page = None
-        if _loading_page:
-            root.after(1000, _check_loading_page)
-
-    root.after(1000, _check_loading_page)
+    webbrowser.open(URL)
     root.mainloop()
 
 
@@ -473,13 +418,9 @@ if __name__ == '__main__':
     # Enforce single instance — exits here if another app is already running
     acquire_single_instance()
 
-    # Show loading page in browser immediately (before heavy imports)
-    _loading_page = write_loading_page()
-    webbrowser.open(f"file://{_loading_page}")
-    print(f"[LAUNCHER] Loading page opened at file://{_loading_page}, starting uvicorn in background thread")
-    sys.stdout.flush()
-
     # Start the server (heavy imports happen inside start_server_thread)
+    print("[LAUNCHER] Starting uvicorn in background thread")
+    sys.stdout.flush()
     try:
         _server, _server_thread = start_server_thread()
     except Exception:
@@ -492,26 +433,26 @@ if __name__ == '__main__':
     _start_ota_watcher()
 
     # Run the UI that keeps the process alive and gives the user a kill switch.
-    # Priority: rumps (macOS menu bar) → Tk fallback → headless sleep loop
+    # Priority: pywebview app window → Tk fallback → headless sleep loop
     try:
-        import rumps  # noqa: F401 — just checking availability
-        run_menubar()
+        import webview  # noqa: F401 — just checking availability
+        has_webview = True
     except ImportError:
-        print("[LAUNCHER] rumps not available, falling back to Tk window.")
+        has_webview = False
+
+    if has_webview:
+        run_webview()
+    else:
+        print("[LAUNCHER] pywebview not available, falling back to Tk window + browser.")
         sys.stdout.flush()
         try:
             run_tk_fallback()
         except Exception as e:
             print(f"[LAUNCHER] Tk fallback failed ({e}), running headless sleep loop.")
             sys.stdout.flush()
+            webbrowser.open(URL)
             try:
                 while True:
                     time.sleep(1)
-                    if _loading_page and port_in_use():
-                        try:
-                            os.unlink(_loading_page)
-                        except OSError:
-                            pass
-                        _loading_page = None
             except (KeyboardInterrupt, SystemExit):
                 shutdown()

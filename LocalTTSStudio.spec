@@ -9,7 +9,7 @@
 #     doesn't matter).
 #   • Ships the web UI (static/) and assets/ as data files.
 #   • hiddenimports cover dynamically-loaded deps PyInstaller can't see (uvicorn
-#     loops/protocols, rumps/PyObjC for the menu bar, huggingface_hub, etc.).
+#     loops/protocols, pywebview/PyObjC for the app window, huggingface_hub, etc.).
 #   • Heavy unused libs are excluded to keep the bundle smaller.
 #
 # Build:  ./venv/bin/python -m PyInstaller LocalTTSStudio.spec --noconfirm
@@ -30,11 +30,11 @@ a = Analysis(
     pathex=[],
     binaries=[('ffmpeg', '.'), (_libomp, '.')] + qwen_binaries,
     datas=[('static', 'static'), ('assets', 'assets')] + qwen_datas,
-    hiddenimports=['main', 'huggingface_hub', 'huggingface_hub.utils', 'uvicorn', 'uvicorn.logging', 'uvicorn.loops.auto', 'uvicorn.loops.asyncio', 'uvicorn.protocols.http.auto', 'uvicorn.protocols.websockets.auto', 'starlette.background', 'rumps', 'AppKit', 'Foundation', 'objc', 'PyObjCTools'] + qwen_hiddenimports,
+    hiddenimports=['main', 'huggingface_hub', 'huggingface_hub.utils', 'uvicorn', 'uvicorn.logging', 'uvicorn.loops.auto', 'uvicorn.loops.asyncio', 'uvicorn.protocols.http.auto', 'uvicorn.protocols.websockets.auto', 'starlette.background', 'webview', 'webview.platforms.cocoa', 'AppKit', 'Foundation', 'WebKit', 'Security', 'Quartz', 'objc', 'PyObjCTools'] + qwen_hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=['webview', 'PyQt5', 'matplotlib', 'notebook', 'pandas', 'sphinx', 'IPython', 'jedi', 'docutils', 'babel', 'pytest'],
+    excludes=['PyQt5', 'matplotlib', 'notebook', 'pandas', 'sphinx', 'IPython', 'jedi', 'docutils', 'babel', 'pytest'],
     noarchive=False,
     optimize=0,
 )
