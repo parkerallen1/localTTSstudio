@@ -35,7 +35,7 @@ import platform
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from fastapi import FastAPI, HTTPException, Request, Form, UploadFile, File
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
 import uuid
@@ -1159,7 +1159,12 @@ app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
 @app.get("/")
 def serve_index():
-    return FileResponse(os.path.join(static_dir, "index.html"))
+    # Stamp asset URLs with the app version and forbid caching the HTML, so a
+    # new build never runs against a stale cached script.js/style.css (which
+    # left new UI elements dead until the user hard-refreshed).
+    with open(os.path.join(static_dir, "index.html"), encoding="utf-8") as f:
+        html = f.read().replace("__APP_VERSION__", APP_VERSION)
+    return HTMLResponse(html, headers={"Cache-Control": "no-cache"})
 
 @app.get("/api/profiles")
 def get_profiles():
