@@ -63,6 +63,14 @@ import atexit
 import urllib.request
 
 
+# Block SIGINT/SIGTERM process-wide BEFORE any thread is spawned (threads
+# inherit the mask). Otherwise the kernel may deliver a signal to a thread
+# that isn't blocking it — default action, instant death, no cleanup — instead
+# of to the sigwait watcher installed in _install_signal_watcher().
+_HANDLED_SIGNALS = {signal.SIGINT, signal.SIGTERM}
+signal.pthread_sigmask(signal.SIG_BLOCK, _HANDLED_SIGNALS)
+
+
 def _start_heartbeat():
     """Spawn a daemon thread that logs a heartbeat every 30 seconds."""
     _start_time = time.monotonic()
@@ -307,8 +315,21 @@ def shutdown():
     os._exit(0)
 
 
-def _signal_handler(sig, frame):
-    shutdown()
+def _install_signal_watcher():
+    """Handle SIGINT/SIGTERM via sigwait in a thread. Ordinary Python signal
+    handlers only run between bytecodes on the main thread, and the Cocoa run
+    loop (webview.start()) parks the main thread in native code — so a plain
+    signal.signal() handler would never fire and `kill` / Ctrl+C would be
+    ignored while the window is open. The signals themselves are blocked at
+    module import (see _HANDLED_SIGNALS above) so no other thread can steal
+    the delivery."""
+    def _wait():
+        sig = signal.sigwait(_HANDLED_SIGNALS)
+        print(f"[LAUNCHER] Received signal {sig} — shutting down.")
+        sys.stdout.flush()
+        shutdown()
+
+    threading.Thread(target=_wait, daemon=True, name="signal-watcher").start()
 
 
 # ---------------------------------------------------------------------------
@@ -412,8 +433,7 @@ if __name__ == '__main__':
     import multiprocessing
     multiprocessing.freeze_support()
 
-    signal.signal(signal.SIGINT, _signal_handler)
-    signal.signal(signal.SIGTERM, _signal_handler)
+    _install_signal_watcher()
 
     # Enforce single instance — exits here if another app is already running
     acquire_single_instance()
