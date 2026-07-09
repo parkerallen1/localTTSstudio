@@ -794,10 +794,13 @@ _DEFAULT_SETTINGS = {
     "preferred_model_size": "0.6B",
     "preferred_model_type": "CustomVoice",
     "auto_preload_on_start": False,
-    # When remote_server_url is set, /api/generate is forwarded there instead
-    # of loading a model locally (see Settings → Remote in the UI).
+    # When remote_server_url is set (and remote_enabled is true), /api/generate
+    # is forwarded there instead of loading a model locally (see Settings →
+    # Remote in the UI). remote_enabled lets the Local/Cloud header toggle
+    # switch back to local generation without losing the saved URL/token.
     "remote_server_url": "",
     "remote_server_token": "",
+    "remote_enabled": True,
 }
 
 def load_settings() -> dict:
@@ -1100,6 +1103,12 @@ async def update_settings(request: Request):
         if not isinstance(v, str):
             raise HTTPException(status_code=400, detail="remote_server_token must be a string")
         current["remote_server_token"] = v.strip()
+
+    if "remote_enabled" in body:
+        v = body["remote_enabled"]
+        if not isinstance(v, bool):
+            raise HTTPException(status_code=400, detail="remote_enabled must be a boolean")
+        current["remote_enabled"] = v
 
     save_settings(current)
     # Don't echo the token into the activity log
@@ -1519,11 +1528,12 @@ async def generate_audio(
     text_preview = (text[:80] + "...") if len(text) > 80 else text
     emit_log(f"Generation requested — mode={model_type}, size={model_size}, text=\"{text_preview}\"", "info")
 
-    # Remote generation: if a server URL is configured, forward instead of
-    # loading a model here. Server-mode instances never forward (no loops).
+    # Remote generation: if a server URL is configured and the Local/Cloud
+    # toggle is on Cloud, forward instead of loading a model here.
+    # Server-mode instances never forward (no loops).
     _settings = load_settings()
     _remote_url = (_settings.get("remote_server_url") or "").strip().rstrip("/")
-    if _remote_url and not SERVER_MODE:
+    if _remote_url and _settings.get("remote_enabled", True) and not SERVER_MODE:
         return await _generate_via_remote(
             _remote_url, (_settings.get("remote_server_token") or "").strip(),
             text=text, language=language, model_size=model_size, model_type=model_type,

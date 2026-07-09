@@ -52,6 +52,11 @@
             <p class="subtitle">Local text-to-speech, runs entirely on your machine.</p>
             <div class="header-badges">
                 <span class="global-status-badge idle" id="global-status-badge">Model Status: Idle</span>
+                <div id="gen-location-toggle" class="format-toggle gen-loc-toggle hidden"
+                    title="Where audio is generated">
+                    <button class="format-btn" data-loc="local">&#128187; Local</button>
+                    <button class="format-btn" data-loc="cloud">&#9729;&#65039; Cloud</button>
+                </div>
                 <button id="btn-open-tutorial" class="secondary-btn small-btn" title="How to use this app">&#128218; Tutorial</button>
                 <button id="btn-open-settings" class="secondary-btn small-btn" title="Settings &amp; Diagnostics">&#9881; Settings</button>
                 <button id="btn-toggle-log" class="secondary-btn small-btn" title="Toggle Activity Log">Logs</button>

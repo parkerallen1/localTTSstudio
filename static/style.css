@@ -484,6 +484,18 @@ button:focus-visible {
     color: var(--primary);
 }
 
+/* Local/Cloud generation toggle in the header (only shown when a remote
+   server is configured) */
+.gen-loc-toggle .format-btn {
+    padding: 0.3rem 0.7rem;
+    font-size: 0.85rem;
+}
+
+.gen-loc-toggle .format-btn.active[data-loc="cloud"] {
+    background: rgba(47, 133, 90, 0.25);
+    color: #68d391;
+}
+
 .paragraphs-list {
     display: flex;
     flex-direction: column;

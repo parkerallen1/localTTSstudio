@@ -1906,6 +1906,49 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
+    // ─── Local / Cloud generation toggle ──────────────────────────────────────
+    // Visible only when a remote server is configured; flips remote_enabled so
+    // switching back to Local doesn't lose the saved URL/token.
+
+    const genLocToggle = document.getElementById('gen-location-toggle');
+
+    function setGenLocationActive(cloud) {
+        genLocToggle.querySelectorAll('.format-btn').forEach(b =>
+            b.classList.toggle('active', (b.dataset.loc === 'cloud') === cloud));
+    }
+
+    async function refreshGenLocationToggle() {
+        try {
+            const res = await fetch('/api/settings');
+            if (!res.ok) return;
+            const s = await res.json();
+            const hasRemote = !!(s.remote_server_url || '').trim();
+            genLocToggle.classList.toggle('hidden', !hasRemote);
+            if (hasRemote) setGenLocationActive(s.remote_enabled !== false);
+        } catch (e) { /* backend not up yet — toggle stays hidden */ }
+    }
+
+    genLocToggle.querySelectorAll('.format-btn').forEach(btn => {
+        btn.addEventListener('click', async () => {
+            const cloud = btn.dataset.loc === 'cloud';
+            setGenLocationActive(cloud);
+            try {
+                const res = await fetch('/api/settings', {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ remote_enabled: cloud })
+                });
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                log(cloud ? 'Generation switched to the remote server (Cloud).' : 'Generation switched to this machine (Local).');
+            } catch (e) {
+                log(`Could not switch generation location: ${e.message}`, 'error');
+                refreshGenLocationToggle();
+            }
+        });
+    });
+
+    refreshGenLocationToggle();
+
     // ─── Settings: Remote tab ─────────────────────────────────────────────────
 
     document.getElementById('btn-save-remote').addEventListener('click', async () => {
@@ -1918,6 +1961,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 remote_server_url: document.getElementById('remote-server-url').value.trim(),
                 remote_server_token: document.getElementById('remote-server-token').value.trim()
             };
+            // Saving a server URL means "use it" — flip the toggle to Cloud
+            if (payload.remote_server_url) payload.remote_enabled = true;
             const res = await fetch('/api/settings', {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
@@ -1931,6 +1976,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 ? 'Saved — audio will now be generated on the remote server.'
                 : 'Saved — audio will be generated locally.';
             msgEl.classList.add('ok');
+            refreshGenLocationToggle();
             setTimeout(() => { msgEl.classList.add('hidden'); }, 3000);
         } catch (e) {
             msgEl.textContent = `Error: ${e.message}`;
