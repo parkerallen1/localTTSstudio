@@ -69,7 +69,7 @@ import time as _time
 import text_parser
 from collections import deque
 
-APP_VERSION = "3.7.0" # Current application version
+APP_VERSION = "3.8.0" # Current application version
 GITHUB_REPO = "parkerallen1/localTTSstudio" # Actual repo for OTA updates
 
 # ─── Activity Log ─────────────────────────────────────────────────────────────
@@ -1453,6 +1453,9 @@ async def import_project(request: Request):
     settings = {**defaults, **(data.get("settings") or {})}
     settings.setdefault("modelType", "CustomVoice")
     settings.setdefault("modelSize", "1.7B")
+    # Imported docs are devotionals with scripture references — Bible text
+    # formatting defaults ON (callers/import_defaults can still set it false).
+    settings.setdefault("bibleMode", True)
     if settings["modelType"] == "Base" and not settings.get("savedVoiceId"):
         raise HTTPException(status_code=400, detail="modelType Base requires savedVoiceId (a saved voice profile id)")
 
