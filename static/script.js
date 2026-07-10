@@ -495,9 +495,75 @@ document.addEventListener('DOMContentLoaded', () => {
             hasUnsavedChanges = false;
             setSaveStatus('saved');
             log(`Loaded project: "${project.name}"`, 'ok');
+
+            // Auto-imported projects (Google Docs watcher) keep generating
+            // server-side after load — refresh finished paragraphs live.
+            if (project.import_status === 'generating' || project.import_status === 'pending') {
+                startImportWatch(projectId);
+                log('This project is still generating in the background — paragraphs will appear as they finish.');
+            } else {
+                stopImportWatch();
+            }
         } catch (e) {
             log(`Failed to load project: ${e.message}`, 'error');
         }
+    }
+
+    // ─── Live refresh for background imports ─────────────────────────────────
+    // While a project imported via /api/projects/import is still generating on
+    // the server, poll it and surface each finished paragraph's audio in place.
+    // Only audio/status are touched (via updateCardUi), so in-progress text
+    // edits and user-triggered regenerations are never disturbed.
+    let importWatchTimer = null;
+
+    function stopImportWatch() {
+        if (importWatchTimer) {
+            clearInterval(importWatchTimer);
+            importWatchTimer = null;
+        }
+    }
+
+    function startImportWatch(projectId) {
+        stopImportWatch();
+        importWatchTimer = setInterval(async () => {
+            if (currentProjectId !== projectId) { stopImportWatch(); return; }
+            let project;
+            try {
+                const res = await fetch(`/api/projects/${projectId}`);
+                if (res.status === 404) { stopImportWatch(); return; }
+                if (!res.ok) return; // transient — try again next tick
+                project = await res.json();
+            } catch {
+                return;
+            }
+            if (currentProjectId !== projectId) { stopImportWatch(); return; }
+
+            let landed = 0;
+            (project.paragraphs || []).forEach(sp => {
+                const idx = paragraphsData.findIndex(p => p.id === sp.id);
+                if (idx === -1) return;
+                const para = paragraphsData[idx];
+                const newNs = (sp.takes || []).filter(n => !(para.takes || []).some(t => t.n === n));
+                if (!newNs.length || para.status === 'generating') return;
+                if (!para.takes) { para.takes = []; para.activeTake = null; }
+                newNs.forEach(n => para.takes.push({
+                    n,
+                    url: `/api/projects/${projectId}/audio/${takeFileId(para, n)}`,
+                    blob: null
+                }));
+                setActiveTake(para, para.takes[para.takes.length - 1].n);
+                para.status = 'done';
+                updateCardUi(idx);
+                landed++;
+            });
+            if (landed) updateDownloadButtonVisibility();
+
+            const status = project.import_status;
+            if (status !== 'generating' && status !== 'pending') {
+                stopImportWatch();
+                log(`Background generation finished (${status || 'done'}).`, status === 'done' ? 'ok' : 'warn');
+            }
+        }, 4000);
     }
 
     window.loadProjectFromModal = (id) => loadProject(id);
