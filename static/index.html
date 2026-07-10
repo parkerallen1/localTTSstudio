@@ -189,6 +189,22 @@
     </div>
 
     <!-- Tutorial Modal -->
+    <!-- Access gate: shown only when the backend runs in server mode and no
+         valid token cookie is present (script.js probes /api/health on load). -->
+    <div id="access-gate-modal" class="modal hidden">
+        <div class="modal-content glass">
+            <div class="modal-header">
+                <h2>&#128273; Enter Access Code</h2>
+            </div>
+            <div class="modal-body">
+                <p>This TTS Studio server is private. Paste the access code you were given — you'll only need to do this once on this device.</p>
+                <input type="password" id="access-token-input" placeholder="Access code" autocomplete="off" style="width:100%; margin-top: 12px;">
+                <p id="access-gate-error" class="hidden" style="color: var(--error, #ff6b6b); margin-top: 8px;">That code wasn't accepted — check it and try again.</p>
+                <button id="btn-access-submit" class="primary-btn" style="margin-top: 12px;">Unlock</button>
+            </div>
+        </div>
+    </div>
+
     <div id="tutorial-modal" class="modal hidden">
         <div class="modal-content glass tutorial-modal-content">
             <div class="modal-header">

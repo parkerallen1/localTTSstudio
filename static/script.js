@@ -26,6 +26,38 @@
  * refresh after changes during development.
  */
 document.addEventListener('DOMContentLoaded', () => {
+    // ─── Server access gate ───────────────────────────────────────────────────
+    // When this backend runs in server mode (QWEN_TTS_SERVER_TOKEN), every
+    // /api/* call requires the token. <audio> tags and EventSource can't attach
+    // an Authorization header, so the UI stores the token in a cookie after a
+    // one-time access-code prompt; the middleware in main.py accepts either.
+    (async () => {
+        let status;
+        try {
+            status = (await fetch('/api/health')).status;
+        } catch {
+            return; // network error — let the rest of the app surface it
+        }
+        if (status !== 401) return;
+        const modal = document.getElementById('access-gate-modal');
+        const input = document.getElementById('access-token-input');
+        const errEl = document.getElementById('access-gate-error');
+        const submit = async () => {
+            const code = input.value.trim();
+            if (!code) return;
+            const ok = await fetch('/api/health', { headers: { 'Authorization': `Bearer ${code}` } })
+                .then(r => r.ok).catch(() => false);
+            if (!ok) { errEl.classList.remove('hidden'); return; }
+            const secure = location.protocol === 'https:' ? '; Secure' : '';
+            document.cookie = `tts_access_token=${encodeURIComponent(code)}; path=/; max-age=31536000; SameSite=Strict${secure}`;
+            location.reload();
+        };
+        document.getElementById('btn-access-submit').addEventListener('click', submit);
+        input.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
+        modal.classList.remove('hidden');
+        input.focus();
+    })();
+
     const textInput = document.getElementById('text-input');
     const btnParse = document.getElementById('btn-parse');
     const paragraphsContainer = document.getElementById('paragraphs-container');

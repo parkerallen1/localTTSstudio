@@ -855,8 +855,15 @@ if SERVER_MODE:
     @app.middleware("http")
     async def _require_server_token(request: Request, call_next):
         if request.url.path.startswith("/api/"):
+            # Token comes either as a bearer header (API clients: the desktop
+            # app's Remote mode, doc_watcher.py, curl) or as a cookie (the web
+            # UI browsed directly on this server — <audio> tags and EventSource
+            # can't attach headers, so the access-code gate in the UI stores
+            # the token in a cookie instead).
             auth = request.headers.get("authorization", "")
             supplied = auth[7:] if auth.lower().startswith("bearer ") else ""
+            if not supplied:
+                supplied = request.cookies.get("tts_access_token", "")
             if not _hmac.compare_digest(supplied, SERVER_TOKEN):
                 return _JSONResponse(status_code=401, content={"detail": "Missing or invalid access token."})
         return await call_next(request)

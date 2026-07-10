@@ -107,11 +107,24 @@ Funnel; the app doesn't care what the tunnel is.)
 
 ## Teammate setup
 
+There are two ways to use the server, and they can be mixed freely:
+
+### A. In the browser — nothing to install
+
+Teammates just open the server's URL (the Funnel/tunnel address). The page
+asks for the access code once, remembers it in a cookie on that device, and
+then they have the full Studio UI — projects, generation, takes, export — all
+living on the server. This is the mode to pair with the Google Docs
+auto-import pipeline (see `DOC_WATCHER.md`): shared docs appear in this
+project list, already generated.
+
+### B. In the desktop app — local projects, remote generation
+
 1. Open Local TTS Studio → **⚙ Settings → Remote**.
 2. Paste the **Server URL** and **Access Token** you were given.
 3. Click **Test Connection** — you should see the server version.
 4. **Save.** All generation now runs on the server; leave the URL empty to go
-   back to local generation.
+   back to local generation. Projects stay on your own machine in this mode.
 
 ## Notes
 
