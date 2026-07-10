@@ -759,8 +759,12 @@ document.addEventListener('DOMContentLoaded', () => {
             if (/^(Time|Focus|Scriptures)\b[^:\n]{0,24}:/i.test(stripped)) continue;
             // Boilerplate headings start their own paragraph but are NOT chapters.
             const isChapter = isHeading && !CHAPTER_EXCLUDE.has(headingKey(stripped));
-            let cleaned = cleanTextGeneral(stripped);
-            if (bibleMode) cleaned = cleanTextBible(cleaned);
+            // Bible formatting must run BEFORE cleanTextGeneral: general turns
+            // every [ or ] into a comma, which would clobber bible mode's
+            // verse-number removal (e.g. "[28]" -> "" only matches while the
+            // brackets survive).
+            let cleaned = bibleMode ? cleanTextBible(stripped) : stripped;
+            cleaned = cleanTextGeneral(cleaned);
             cleaned = cleaned.trim();
             if (!cleaned) continue;
             items.push({ text: cleaned, chapter: isChapter, heading: isHeading });

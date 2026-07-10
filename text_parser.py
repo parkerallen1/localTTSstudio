@@ -177,9 +177,11 @@ def parse_paragraphs(raw_text: str, bible_mode: bool = False):
             continue
         # Boilerplate headings start their own paragraph but are NOT chapters.
         is_chapter = is_heading and heading_key(stripped) not in CHAPTER_EXCLUDE
-        cleaned = clean_text_general(stripped)
-        if bible_mode:
-            cleaned = clean_text_bible(cleaned)
+        # Bible formatting must run BEFORE clean_text_general: general turns every
+        # [ or ] into a comma, which would clobber bible mode's verse-number
+        # removal (e.g. "[28]" -> "" only matches while the brackets survive).
+        cleaned = clean_text_bible(stripped) if bible_mode else stripped
+        cleaned = clean_text_general(cleaned)
         cleaned = cleaned.strip()
         if not cleaned:
             continue

@@ -1,4 +1,4 @@
-# Local TTS Studio v3.8.1
+# Local TTS Studio v3.8.2
 
 ## Google Docs → automatic TTS
 
@@ -36,3 +36,11 @@ fully generated project — no copy-paste, no clicking Generate.
 - The browser UI now has a proper phone layout: single-column reflow,
   wrapping action rows (no more Download button running off-screen), full-
   width audio players and activity log, and comfortable tap targets.
+
+## Fixes (3.8.2)
+
+- Bible text formatting now removes bracketed verse numbers like `[7]`,
+  `[28]` again. They were being turned into commas by the generic text
+  cleanup before the Bible rule could strip them; Bible formatting now
+  runs first. Applies to both the browser Parse button and Google Docs
+  auto-import.
