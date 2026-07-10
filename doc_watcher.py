@@ -6,7 +6,10 @@ turns it into a generated TTS project automatically:
 
   1. Polls Google Drive for Google Docs the service account can see
      (everything shared with it, or one folder via "folder_id").
-  2. Exports each new doc as Markdown.
+  2. Reads each new doc via the Docs API and converts its FIRST tab to
+     Markdown (headings preserved — ## marks a chapter in the app). Docs with
+     multiple tabs import only the first; if the Docs API is unavailable it
+     falls back to Drive's whole-document Markdown export.
   3. POSTs it to the app's /api/projects/import endpoint, which parses it into
      paragraphs and generates audio for each one in the background.
 
@@ -48,7 +51,52 @@ except ImportError:
     sys.exit("Missing dependency: pip install google-auth")
 
 DRIVE_API = "https://www.googleapis.com/drive/v3"
+DOCS_API = "https://docs.googleapis.com/v1"
+# drive.readonly also authorizes Docs API reads (documents.get accepts it).
 SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
+
+# Google Docs named styles -> Markdown heading prefixes. H2 is what the app
+# treats as a chapter start, so preserving these is what makes chapters work.
+_HEADING_PREFIX = {
+    "TITLE": "# ",
+    "HEADING_1": "# ",
+    "HEADING_2": "## ",
+    "HEADING_3": "### ",
+    "HEADING_4": "#### ",
+    "HEADING_5": "##### ",
+    "HEADING_6": "###### ",
+}
+
+
+def docs_json_to_markdown(document_tab):
+    """Convert one Docs API tab body (documents.get JSON) to Markdown.
+
+    Deliberately minimal: headings, bullets, and bold are what the app's
+    parser cares about (## marks a chapter; everything else is stripped for
+    TTS anyway). Tables and drawings are skipped."""
+    lines = []
+    for item in document_tab.get("body", {}).get("content", []):
+        para = item.get("paragraph")
+        if not para:
+            continue
+        parts = []
+        for el in para.get("elements", []):
+            run = el.get("textRun")
+            if not run:
+                continue
+            text = run.get("content", "").replace("\n", "")
+            if text and run.get("textStyle", {}).get("bold"):
+                text = f"**{text}**"
+            parts.append(text)
+        text = "".join(parts).strip()
+        if not text:
+            continue
+        prefix = _HEADING_PREFIX.get(
+            para.get("paragraphStyle", {}).get("namedStyleType", ""), "")
+        if not prefix and "bullet" in para:
+            prefix = "- "
+        lines.append(prefix + text)
+    return "\n\n".join(lines)
 DEFAULT_DIR = os.path.expanduser("~/.qwen_tts_studio")
 DEFAULT_CONFIG = os.path.join(DEFAULT_DIR, "doc_watcher.json")
 STATE_FILE = os.path.join(DEFAULT_DIR, "doc_watcher_state.json")
@@ -117,6 +165,7 @@ class Watcher:
                 return docs
 
     def export_markdown(self, doc_id):
+        """Fallback: Drive's whole-document export (includes ALL tabs)."""
         for mime in ("text/markdown", "text/plain"):
             r = requests.get(f"{DRIVE_API}/files/{doc_id}/export",
                              params={"mimeType": mime},
@@ -124,6 +173,33 @@ class Watcher:
             if r.status_code == 200:
                 return r.text
         r.raise_for_status()
+
+    def fetch_doc_markdown(self, doc):
+        """Get a doc's content as Markdown, restricted to its FIRST tab.
+
+        Drive's export endpoint can't target a tab, so read the document
+        structure via the Docs API and build the Markdown ourselves. If that
+        fails for any reason, fall back to the whole-doc Drive export."""
+        try:
+            r = requests.get(f"{DOCS_API}/documents/{doc['id']}",
+                             params={"includeTabsContent": "true"},
+                             headers=self._google_headers(), timeout=60)
+            r.raise_for_status()
+            data = r.json()
+            tabs = data.get("tabs") or []
+            if tabs:
+                if len(tabs) > 1:
+                    log(f"\"{doc['name']}\" has {len(tabs)} tabs — importing only the first.")
+                body = tabs[0].get("documentTab", {})
+            else:
+                body = data  # old-style response: body at the top level
+            markdown = docs_json_to_markdown(body)
+            if markdown.strip():
+                return markdown
+            log(f"Docs API returned no text for \"{doc['name']}\" — falling back to Drive export.", "warn")
+        except requests.RequestException as e:
+            log(f"Docs API read failed for \"{doc['name']}\" ({e}) — falling back to Drive export (all tabs).", "warn")
+        return self.export_markdown(doc["id"])
 
     def import_doc(self, doc, raw_text):
         payload = {
@@ -156,7 +232,7 @@ class Watcher:
                 continue
             log(f"New doc: \"{doc['name']}\" — exporting...")
             try:
-                raw_text = self.export_markdown(doc["id"])
+                raw_text = self.fetch_doc_markdown(doc)
                 result = self.import_doc(doc, raw_text)
             except requests.RequestException as e:
                 log(f"Failed to import \"{doc['name']}\": {e} — will retry next poll.", "error")
