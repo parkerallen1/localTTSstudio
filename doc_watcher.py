@@ -143,15 +143,23 @@ class Watcher:
         return {"Authorization": f"Bearer {self.app_token}"} if self.app_token else {}
 
     def list_docs(self):
-        """All Google Docs visible to the service account (or one folder)."""
-        scope_q = f"'{self.folder_id}' in parents" if self.folder_id else "sharedWithMe"
-        query = f"mimeType='application/vnd.google-apps.document' and trashed=false and {scope_q}"
+        """All Google Docs visible to the service account (or one folder).
+
+        No "sharedWithMe" clause: it misses items in Shared Drives. The
+        service account owns nothing, so "everything it can see" and
+        "everything shared with it" are the same set."""
+        query = "mimeType='application/vnd.google-apps.document' and trashed=false"
+        if self.folder_id:
+            query += f" and '{self.folder_id}' in parents"
         docs, page_token = [], None
         while True:
             params = {
                 "q": query,
                 "fields": "nextPageToken, files(id, name, modifiedTime, webViewLink)",
                 "pageSize": 100,
+                "includeItemsFromAllDrives": "true",
+                "supportsAllDrives": "true",
+                "corpora": "allDrives",
             }
             if page_token:
                 params["pageToken"] = page_token
