@@ -1479,3 +1479,104 @@ button:focus-visible {
     max-height: 280px;
     overflow-y: auto;
 }
+/* ─── Mobile layout ─────────────────────────────────────────────────────────
+   The app is used in the browser on phones (teammates open the server URL),
+   so below ~640px everything reflows to a single column, controls wrap onto
+   their own rows, and the fixed activity log spans the width instead of a
+   420px panel that would overflow the viewport. */
+@media (max-width: 640px) {
+    .container {
+        padding: 1rem 0.9rem;
+        /* Clear the fixed activity log (160px) pinned to the bottom. */
+        padding-bottom: 12rem;
+    }
+
+    header {
+        margin-bottom: 1.25rem;
+    }
+
+    header h1 {
+        font-size: 1.75rem;
+    }
+
+    .subtitle {
+        font-size: 0.9rem;
+    }
+
+    /* Panels: trim the generous desktop padding so content isn't boxed in. */
+    .glass {
+        padding: 1.1rem;
+    }
+
+    /* Project bar: name on top, status/actions below. */
+    .project-bar {
+        flex-wrap: wrap;
+        padding: 10px 14px;
+    }
+
+    /* Paragraphs header: title on its own line, bulk actions wrap beneath. */
+    .paragraphs-header {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 0.75rem;
+    }
+
+    .bulk-actions {
+        flex-wrap: wrap;
+        align-items: center;
+    }
+
+    /* This group carries an inline margin-left:1rem from the markup — reset it
+       so it aligns flush when it wraps onto its own row on narrow screens. */
+    #download-options {
+        margin-left: 0 !important;
+        flex-wrap: wrap;
+    }
+
+    /* Full-width primary actions are easier to tap. */
+    #btn-generate-all,
+    #btn-download-all {
+        flex: 1;
+        min-width: 140px;
+    }
+
+    /* Paragraph card action row: let the audio player take the full width on
+       its own line instead of being squeezed next to the status + button. */
+    .card-actions {
+        flex-wrap: wrap;
+        gap: 0.5rem;
+    }
+
+    .audio-player {
+        margin-left: 0;
+        width: 100%;
+        flex-basis: 100%;
+        order: 3;
+    }
+
+    /* Settings/voice grids collapse to one column. */
+    .settings-grid {
+        grid-template-columns: 1fr;
+    }
+
+    /* Activity log spans the bottom of the screen rather than a floating panel
+       wider than the viewport. */
+    .activity-log {
+        left: 0.75rem;
+        right: 0.75rem;
+        bottom: 0.75rem;
+        width: auto;
+        height: 160px;
+    }
+
+    /* Comfortable tap targets across the small utility buttons. */
+    .small-btn {
+        padding: 0.45rem 0.7rem;
+    }
+
+    /* Modals use nearly the full width on phones. */
+    .modal-content {
+        width: 94%;
+        padding: 1.25rem;
+    }
+}

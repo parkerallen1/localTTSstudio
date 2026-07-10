@@ -1,4 +1,4 @@
-# Local TTS Studio v3.8.0
+# Local TTS Studio v3.8.1
 
 ## Google Docs → automatic TTS
 
@@ -30,3 +30,9 @@ fully generated project — no copy-paste, no clicking Generate.
 
 - Import generation failures mark the paragraph and continue instead of
   wedging the project (e.g. during network hangs).
+
+## Mobile
+
+- The browser UI now has a proper phone layout: single-column reflow,
+  wrapping action rows (no more Download button running off-screen), full-
+  width audio players and activity log, and comfortable tap targets.

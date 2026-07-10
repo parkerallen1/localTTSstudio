@@ -69,7 +69,7 @@ import time as _time
 import text_parser
 from collections import deque
 
-APP_VERSION = "3.8.0" # Current application version
+APP_VERSION = "3.8.1" # Current application version
 GITHUB_REPO = "parkerallen1/localTTSstudio" # Actual repo for OTA updates
 
 # ─── Activity Log ─────────────────────────────────────────────────────────────
