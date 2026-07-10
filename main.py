@@ -66,6 +66,7 @@ from typing import List, Optional
 import requests
 import subprocess
 import time as _time
+import text_parser
 from collections import deque
 
 APP_VERSION = "3.7.0" # Current application version
@@ -1110,6 +1111,17 @@ async def update_settings(request: Request):
             raise HTTPException(status_code=400, detail="remote_enabled must be a boolean")
         current["remote_enabled"] = v
 
+    if "import_defaults" in body:
+        # Voice/model settings applied to projects created via
+        # /api/projects/import when the caller doesn't supply its own —
+        # same shape as a project's settings object (modelType, modelSize,
+        # speaker, savedVoiceId, voiceDesignPrompt, instruct, temperature,
+        # bibleMode).
+        v = body["import_defaults"]
+        if not isinstance(v, dict):
+            raise HTTPException(status_code=400, detail="import_defaults must be an object")
+        current["import_defaults"] = v
+
     save_settings(current)
     # Don't echo the token into the activity log
     loggable = {k: ("•••" if k == "remote_server_token" and current[k] else current[k]) for k in current}
@@ -1306,6 +1318,180 @@ async def create_project(request: Request):
     }
     _save_project(project_id, project)
     return project
+
+# ─── Headless import (Google Docs watcher, scripts) ──────────────────────────
+# POST /api/projects/import takes raw Markdown text, parses it into paragraphs
+# server-side (same rules as the frontend Parse button — see text_parser.py),
+# creates a project, and generates audio for every paragraph in the background
+# by calling this server's own /api/generate. The project then appears in the
+# UI like any other, with each paragraph's audio saved as take 1.
+
+_import_lock: Optional[asyncio.Lock] = None  # serializes background import jobs
+SELF_PORT = int(os.environ.get("QWEN_TTS_PORT", "8001"))
+
+def _store_wav_as_flac(project_id: str, file_id: str, wav_bytes: bytes):
+    """Encode WAV bytes to FLAC under the project's audio dir (same storage
+    format the UI's auto-save uses). Falls back to raw WAV on encode failure."""
+    audio_dir = os.path.join(_project_dir(project_id), "audio")
+    os.makedirs(audio_dir, exist_ok=True)
+    try:
+        data, samplerate = sf.read(io.BytesIO(wav_bytes))
+        sf.write(os.path.join(audio_dir, f"{file_id}.flac"), data, samplerate, format="FLAC")
+    except Exception as e:
+        emit_log(f"FLAC encode failed for {file_id}, storing WAV: {e}", "warn")
+        with open(os.path.join(audio_dir, f"{file_id}.wav"), "wb") as f:
+            f.write(wav_bytes)
+
+def _set_import_status(project_id: str, status: str):
+    project = _load_project(project_id)
+    if project:
+        project["import_status"] = status
+        _save_project(project_id, project)
+
+async def _run_import_generation(project_id: str, port: int):
+    """Background job: generate audio for every paragraph of an imported
+    project, sequentially, via this server's own /api/generate endpoint (which
+    owns model loading, the MPS lock, and remote forwarding)."""
+    global _import_lock
+    if _import_lock is None:
+        _import_lock = asyncio.Lock()
+
+    async with _import_lock:
+        project = _load_project(project_id)
+        if not project:
+            return
+        s = project.get("settings", {})
+        model_type = s.get("modelType", "CustomVoice")
+        base_form = {
+            "language": "English",
+            "model_size": s.get("modelSize", "1.7B"),
+            "model_type": model_type,
+            "temperature": str(s.get("temperature", 0.85)),
+        }
+        if model_type == "CustomVoice":
+            base_form["speaker"] = s.get("speaker", "Vivian")
+            if s.get("instruct"):
+                base_form["instruct"] = s["instruct"]
+        elif model_type == "VoiceDesign":
+            base_form["voice_design_prompt"] = s.get("voiceDesignPrompt", "")
+        elif model_type == "Base":
+            base_form["profile_id"] = s.get("savedVoiceId", "")
+
+        url = f"http://127.0.0.1:{port}/api/generate"
+        headers = {"Authorization": f"Bearer {SERVER_TOKEN}"} if SERVER_MODE else {}
+        paragraphs = project.get("paragraphs", [])
+        total = len(paragraphs)
+        failures = 0
+        emit_log(f"Import \"{project['name']}\": generating {total} paragraph(s)...", "info")
+        _set_import_status(project_id, "generating")
+
+        for i, para in enumerate(paragraphs):
+            if not _load_project(project_id):
+                emit_log(f"Import \"{project['name']}\": project deleted, stopping.", "warn")
+                return
+            if para.get("hasAudio"):
+                continue
+            form = dict(base_form, text=para["text"])
+            try:
+                resp = await asyncio.to_thread(
+                    requests.post, url, data=form, headers=headers, timeout=1800
+                )
+                if resp.status_code != 200:
+                    raise RuntimeError(f"generate returned {resp.status_code}: {resp.text[:120]}")
+                await asyncio.to_thread(
+                    _store_wav_as_flac, project_id, f"{para['id']}-t1", resp.content
+                )
+            except Exception as e:
+                failures += 1
+                emit_log(f"Import \"{project['name']}\" [{i + 1}/{total}] failed: {e}", "error")
+                continue
+
+            # Re-load before updating so edits made in the UI mid-import (or the
+            # UI's own auto-save) aren't clobbered by our stale copy.
+            fresh = _load_project(project_id)
+            if not fresh:
+                return
+            for p in fresh.get("paragraphs", []):
+                if p["id"] == para["id"]:
+                    p["hasAudio"] = True
+                    p["takes"] = [1]
+                    p["activeTake"] = 1
+                    break
+            fresh["updated_at"] = _now_iso()
+            _save_project(project_id, fresh)
+            emit_log(f"Import \"{project['name']}\" [{i + 1}/{total}] done.", "ok")
+
+        status = "done" if failures == 0 else f"done ({failures} of {total} failed)"
+        _set_import_status(project_id, status)
+        level = "ok" if failures == 0 else "warn"
+        emit_log(f"Import \"{project['name']}\" complete — {total - failures}/{total} paragraphs generated.", level)
+
+@app.post("/api/projects/import")
+async def import_project(request: Request):
+    """Create a project from raw text and (optionally) generate all audio.
+
+    Body: {"raw_text": str, "name"?: str, "settings"?: {...}, "generate"?: bool,
+           "source"?: {...}}. Settings not supplied fall back to the
+    "import_defaults" object in settings.json, then to CustomVoice defaults.
+    "source" is stored verbatim (the Docs watcher records doc id / revision)."""
+    try:
+        data = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="JSON body required")
+    raw_text = str(data.get("raw_text") or "").strip()
+    if not raw_text:
+        raise HTTPException(status_code=400, detail="raw_text is required")
+
+    defaults = load_settings().get("import_defaults", {})
+    settings = {**defaults, **(data.get("settings") or {})}
+    settings.setdefault("modelType", "CustomVoice")
+    settings.setdefault("modelSize", "1.7B")
+    if settings["modelType"] == "Base" and not settings.get("savedVoiceId"):
+        raise HTTPException(status_code=400, detail="modelType Base requires savedVoiceId (a saved voice profile id)")
+
+    parsed = text_parser.parse_paragraphs(raw_text, bible_mode=bool(settings.get("bibleMode")))
+    if not parsed:
+        raise HTTPException(status_code=400, detail="No usable paragraphs after parsing")
+
+    name = str(data.get("name") or "").strip() or text_parser.derive_title(raw_text) or "Imported Project"
+    project_id = str(uuid.uuid4())
+    now = _now_iso()
+    batch_id = int(_time.time() * 1000)
+    project = {
+        "id": project_id,
+        "name": name,
+        "created_at": now,
+        "updated_at": now,
+        "schema_version": 1,
+        "settings": settings,
+        "rawText": raw_text,
+        "paragraphs": [
+            {
+                "id": f"para-{batch_id}-{i}",
+                "text": p["text"],
+                "hasAudio": False,
+                "isChapter": p["chapter"],
+                "takes": [],
+                "activeTake": None,
+            }
+            for i, p in enumerate(parsed)
+        ],
+        "import_status": "pending",
+        "source": data.get("source"),
+    }
+    _save_project(project_id, project)
+    emit_log(f"Imported project \"{name}\" — {len(parsed)} paragraph(s).", "info")
+
+    generate = data.get("generate", True)
+    if generate:
+        # Self-calls go to the port this server is actually bound to (the
+        # request's local socket), not the default — dev runs use other ports.
+        server_addr = request.scope.get("server") or (None, SELF_PORT)
+        asyncio.create_task(_run_import_generation(project_id, server_addr[1] or SELF_PORT))
+    else:
+        _set_import_status(project_id, "not_requested")
+
+    return {"id": project_id, "name": name, "para_count": len(parsed), "generating": bool(generate)}
 
 @app.get("/api/projects/{project_id}")
 def get_project(project_id: str):
