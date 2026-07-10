@@ -1,4 +1,4 @@
-# Local TTS Studio v3.8.2
+# Local TTS Studio v3.8.3
 
 ## Google Docs → automatic TTS
 
@@ -44,3 +44,10 @@ fully generated project — no copy-paste, no clicking Generate.
   cleanup before the Bible rule could strip them; Bible formatting now
   runs first. Applies to both the browser Parse button and Google Docs
   auto-import.
+
+## Fixes (3.8.3)
+
+- Download format toggle: choosing **M4A** now actually downloads M4A.
+  The WAV/M4A toggle shared a CSS class with the Local/Cloud generation
+  toggle, so interacting with Local/Cloud silently reset the download
+  format back to WAV. The toggles are now independent.

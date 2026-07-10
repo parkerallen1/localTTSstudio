@@ -80,11 +80,17 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const downloadOptions = document.getElementById('download-options');
 
-    // --- Format Toggle ---
+    // --- Download Format Toggle (WAV / M4A) ---
+    // Scope strictly to #download-options: the Local/Cloud generation toggle
+    // shares the .format-btn class, and a global selector bound it too —
+    // clicking Local/Cloud then set selectedFormat to undefined (those buttons
+    // carry data-loc, not data-format), silently forcing M4A downloads back to
+    // WAV, and the two toggles fought over the .active highlight.
     let selectedFormat = 'wav';
-    document.querySelectorAll('.format-btn').forEach(btn => {
+    const downloadFormatBtns = document.querySelectorAll('#download-options .format-btn');
+    downloadFormatBtns.forEach(btn => {
         btn.addEventListener('click', () => {
-            document.querySelectorAll('.format-btn').forEach(b => b.classList.remove('active'));
+            downloadFormatBtns.forEach(b => b.classList.remove('active'));
             btn.classList.add('active');
             selectedFormat = btn.dataset.format;
         });
