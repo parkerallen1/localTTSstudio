@@ -1355,60 +1355,29 @@ document.addEventListener('DOMContentLoaded', () => {
         btnDownloadAll.textContent = 'Processing...';
 
         try {
-            log('Merging segments...');
+            // Single server-side pass: merge + treatment + format conversion.
+            // The full-length WAV never round-trips to the browser.
+            log('Exporting (merge + treatment' + (selectedFormat === 'm4a' ? ' + M4A' : '') + ')...');
+            btnDownloadAll.textContent = 'Exporting...';
             const formData = new FormData();
             blobsToMerge.forEach((blob, idx) => {
                 formData.append('files', blob, `segment_${idx}.wav`);
             });
+            formData.append('treatment_type', 'clear');
+            formData.append('output_format', selectedFormat === 'm4a' ? 'm4a' : 'wav');
 
-            const mergeResponse = await fetch('/api/merge', {
+            const exportResponse = await fetch('/api/export', {
                 method: 'POST',
                 body: formData
             });
 
-            if (!mergeResponse.ok) {
-                throw new Error('Merge API failed: ' + mergeResponse.status);
+            if (!exportResponse.ok) {
+                const detail = await exportResponse.text().catch(() => '');
+                throw new Error(`Export failed (HTTP ${exportResponse.status}). ${detail}`);
             }
 
-            let finalBlob = await mergeResponse.blob();
-            log('Merge complete.', 'ok');
-
-            // Always apply Clear Speech treatment
-            log('Applying treatment...');
-            btnDownloadAll.textContent = 'Applying Treatment...';
-            const treatFormData = new FormData();
-            treatFormData.append("audio_file", finalBlob, "merged.wav");
-            treatFormData.append("treatment_type", "clear");
-
-            const treatResponse = await fetch('/api/treat', {
-                method: 'POST',
-                body: treatFormData
-            });
-
-            if (treatResponse.ok) {
-                finalBlob = await treatResponse.blob();
-                log('Treatment applied.', 'ok');
-            } else {
-                log('Treatment failed. Using raw audio.', 'warn');
-            }
-
-            // Convert format if needed
-            if (selectedFormat === 'm4a') {
-                log('Converting to M4A...');
-                btnDownloadAll.textContent = 'Converting...';
-                const convertFormData = new FormData();
-                convertFormData.append('audio_file', finalBlob, 'audio.wav');
-                convertFormData.append('output_format', 'm4a');
-                const convertRes = await fetch('/api/convert', { method: 'POST', body: convertFormData });
-                if (convertRes.ok) {
-                    finalBlob = await convertRes.blob();
-                    log('Converted to M4A.', 'ok');
-                } else {
-                    const detail = await convertRes.text().catch(() => '');
-                    log(`M4A conversion failed (HTTP ${convertRes.status}) — downloading WAV instead. ${detail}`, 'error');
-                    alert('M4A conversion failed on the server — downloading as WAV instead.\n\nMost common cause: ffmpeg unavailable on the server. Check the Logs panel for details.');
-                }
-            }
+            let finalBlob = await exportResponse.blob();
+            log('Export complete.', 'ok');
 
             const customTitle = projectNameInput.value.trim() || 'Qwen3_TTS';
             const safeTitle = customTitle.replace(/[^a-z0-9_ -]/gi, '_').replace(/\s+/g, '_');

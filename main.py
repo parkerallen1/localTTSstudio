@@ -1888,11 +1888,49 @@ async def generate_audio(
             elif torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
+# Filter chains: loudness-normalize every treatment; warmth/clear add a
+# low/high shelf on top for coloration.
+TREATMENT_FILTERS = {
+    "podcast": "loudnorm=I=-16:TP=-1.5:LRA=11",
+    "warmth": "bass=g=6:f=200,loudnorm=I=-16:TP=-1.5:LRA=11",
+    "clear": "treble=g=7:f=2000,loudnorm=I=-16:TP=-1.5:LRA=11",
+}
+
+def _merge_contents_to_wav(file_contents):
+    # Segments may be FLAC (fetched from storage) or WAV (freshly
+    # generated, still in memory) — libsndfile decodes both natively,
+    # so no ffmpeg/ffprobe binary is needed here.
+    chunks = []
+    sr_out = None
+    ch_out = None
+    for idx, content in enumerate(file_contents):
+        data, sr = sf.read(io.BytesIO(content), dtype="float32", always_2d=True)
+        if sr_out is None:
+            sr_out, ch_out = sr, data.shape[1]
+        if data.shape[1] != ch_out:
+            data = np.tile(data.mean(axis=1, keepdims=True), (1, ch_out))
+        if sr != sr_out:
+            n_out = int(round(data.shape[0] * sr_out / sr))
+            x_old = np.linspace(0.0, 1.0, data.shape[0], endpoint=False)
+            x_new = np.linspace(0.0, 1.0, n_out, endpoint=False)
+            data = np.stack(
+                [np.interp(x_new, x_old, data[:, c]) for c in range(ch_out)],
+                axis=1
+            ).astype(np.float32)
+        if idx > 0:
+            chunks.append(np.zeros((sr_out, ch_out), dtype=np.float32))  # 1 s pause
+        chunks.append(data)
+    merged = np.concatenate(chunks, axis=0)
+    temp_out = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
+    temp_out.close()
+    sf.write(temp_out.name, merged, sr_out, format="WAV", subtype="PCM_16")
+    return temp_out.name
+
 @app.post("/api/merge")
 async def merge_audio(files: List[UploadFile] = File(...)):
     if not files:
         raise HTTPException(status_code=400, detail="No files provided")
-        
+
     emit_log(f"Merging {len(files)} audio segments...", "info")
     merge_t0 = _time.monotonic()
     try:
@@ -1901,37 +1939,7 @@ async def merge_audio(files: List[UploadFile] = File(...)):
         for file in files:
             file_contents.append(await file.read())
 
-        def _merge_sync():
-            # Segments may be FLAC (fetched from storage) or WAV (freshly
-            # generated, still in memory) — libsndfile decodes both natively,
-            # so no ffmpeg/ffprobe binary is needed here.
-            chunks = []
-            sr_out = None
-            ch_out = None
-            for idx, content in enumerate(file_contents):
-                data, sr = sf.read(io.BytesIO(content), dtype="float32", always_2d=True)
-                if sr_out is None:
-                    sr_out, ch_out = sr, data.shape[1]
-                if data.shape[1] != ch_out:
-                    data = np.tile(data.mean(axis=1, keepdims=True), (1, ch_out))
-                if sr != sr_out:
-                    n_out = int(round(data.shape[0] * sr_out / sr))
-                    x_old = np.linspace(0.0, 1.0, data.shape[0], endpoint=False)
-                    x_new = np.linspace(0.0, 1.0, n_out, endpoint=False)
-                    data = np.stack(
-                        [np.interp(x_new, x_old, data[:, c]) for c in range(ch_out)],
-                        axis=1
-                    ).astype(np.float32)
-                if idx > 0:
-                    chunks.append(np.zeros((sr_out, ch_out), dtype=np.float32))  # 1 s pause
-                chunks.append(data)
-            merged = np.concatenate(chunks, axis=0)
-            temp_out = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
-            temp_out.close()
-            sf.write(temp_out.name, merged, sr_out, format="WAV", subtype="PCM_16")
-            return temp_out.name
-
-        out_path = await asyncio.to_thread(_merge_sync)
+        out_path = await asyncio.to_thread(_merge_contents_to_wav, file_contents)
         merge_elapsed = _time.monotonic() - merge_t0
         emit_log(f"Merge complete — {merge_elapsed:.1f}s, {len(files)} segments", "ok")
 
@@ -1956,15 +1964,8 @@ async def treat_audio(
     """
     Apply ffmpeg audio enhancements to an uploaded audio file and return the processed file.
     """
-    # Filter chains: loudness-normalize every treatment; warmth/clear add a
-    # low/high shelf on top for coloration.
-    treatment_filters = {
-        "podcast": "loudnorm=I=-16:TP=-1.5:LRA=11",
-        "warmth": "bass=g=6:f=200,loudnorm=I=-16:TP=-1.5:LRA=11",
-        "clear": "treble=g=7:f=2000,loudnorm=I=-16:TP=-1.5:LRA=11",
-    }
-    if treatment_type not in treatment_filters:
-        raise HTTPException(status_code=400, detail=f"Invalid treatment type. Must be one of: {', '.join(treatment_filters)}")
+    if treatment_type not in TREATMENT_FILTERS:
+        raise HTTPException(status_code=400, detail=f"Invalid treatment type. Must be one of: {', '.join(TREATMENT_FILTERS)}")
 
     emit_log(f"Audio treatment requested: {treatment_type}", "info")
     treat_t0 = _time.monotonic()
@@ -1983,7 +1984,7 @@ async def treat_audio(
             _ffmpeg_bin(),
             "-y",  # Overwrite output file if it exists
             "-i", temp_input.name,
-            "-af", treatment_filters[treatment_type],
+            "-af", TREATMENT_FILTERS[treatment_type],
             temp_output.name
         ]
 
@@ -2071,6 +2072,80 @@ async def convert_audio(
     except Exception as e:
         _remove_quietly(temp_input and temp_input.name, temp_output and temp_output.name)
         raise HTTPException(status_code=500, detail=f"Failed to convert audio: {str(e)}")
+
+@app.post("/api/export")
+async def export_audio(
+    files: List[UploadFile] = File(...),
+    treatment_type: str = Form("clear"),
+    output_format: str = Form("wav"),
+):
+    """Merge segments, apply treatment, and convert — all in one server-side
+    pass so the full-length WAV never round-trips to the browser."""
+    if not files:
+        raise HTTPException(status_code=400, detail="No files provided")
+    if treatment_type not in TREATMENT_FILTERS and treatment_type != "none":
+        raise HTTPException(status_code=400, detail=f"Invalid treatment type. Must be 'none' or one of: {', '.join(TREATMENT_FILTERS)}")
+    if output_format not in ("wav", "m4a"):
+        raise HTTPException(status_code=400, detail="Invalid format. Must be one of: wav, m4a")
+
+    emit_log(f"Export: merging {len(files)} segments (treatment={treatment_type}, format={output_format})...", "info")
+    export_t0 = _time.monotonic()
+
+    merged_path = out_path = None
+    try:
+        file_contents = []
+        for file in files:
+            file_contents.append(await file.read())
+        merged_path = await asyncio.to_thread(_merge_contents_to_wav, file_contents)
+        emit_log(f"Export: merge complete — {_time.monotonic() - export_t0:.1f}s", "info")
+
+        if treatment_type == "none" and output_format == "wav":
+            return FileResponse(
+                merged_path,
+                media_type="audio/wav",
+                filename="audio.wav",
+                background=BackgroundTask(os.unlink, merged_path),
+            )
+
+        # One ffmpeg pass does both the treatment filter and the encode.
+        suffix = ".m4a" if output_format == "m4a" else ".wav"
+        temp_out = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+        temp_out.close()
+        out_path = temp_out.name
+
+        command = [_ffmpeg_bin(), "-y", "-i", merged_path]
+        if treatment_type != "none":
+            command += ["-af", TREATMENT_FILTERS[treatment_type]]
+        if output_format == "m4a":
+            command += ["-c:a", "aac", "-b:a", "64k"]
+        command.append(out_path)
+
+        process = await asyncio.create_subprocess_exec(
+            *command,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await process.communicate()
+        os.unlink(merged_path)
+        merged_path = None
+
+        if process.returncode != 0:
+            emit_log(f"ffmpeg export failed (exit {process.returncode}): {stderr.decode()[:200]}", "error")
+            raise RuntimeError("ffmpeg processing failed")
+
+        emit_log(f"Export complete — {_time.monotonic() - export_t0:.1f}s total", "ok")
+        return FileResponse(
+            out_path,
+            media_type="audio/mp4" if output_format == "m4a" else "audio/wav",
+            filename=f"audio{suffix}",
+            background=BackgroundTask(os.unlink, out_path),
+        )
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        emit_log(f"Export FAILED after {_time.monotonic() - export_t0:.1f}s: {e}", "error")
+        _remove_quietly(merged_path, out_path)
+        raise HTTPException(status_code=500, detail=f"Failed to export audio: {str(e)}")
 
 @app.get("/api/check_update")
 async def check_update():
