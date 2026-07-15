@@ -47,9 +47,17 @@ import json
 import gc
 
 def _ffmpeg_bin():
-    """Path to the ffmpeg binary — bundled when frozen, else on PATH."""
+    """Path to the ffmpeg binary — bundled when frozen, else PATH, else the repo copy."""
     if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
         return os.path.join(sys._MEIPASS, 'ffmpeg')
+    if shutil.which("ffmpeg"):
+        return "ffmpeg"
+    # Running from source under launchd/cron gives a minimal PATH with no
+    # ffmpeg — fall back to the macOS binary checked into the repo, otherwise
+    # /api/treat and /api/convert fail and M4A exports silently become WAV.
+    local = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ffmpeg")
+    if sys.platform == "darwin" and os.path.isfile(local):
+        return local
     return "ffmpeg"
 
 def _remove_quietly(*paths):
@@ -69,7 +77,7 @@ import time as _time
 import text_parser
 from collections import deque
 
-APP_VERSION = "3.8.3" # Current application version
+APP_VERSION = "3.8.4" # Current application version
 GITHUB_REPO = "parkerallen1/localTTSstudio" # Actual repo for OTA updates
 
 # ─── Activity Log ─────────────────────────────────────────────────────────────

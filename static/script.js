@@ -86,13 +86,17 @@ document.addEventListener('DOMContentLoaded', () => {
     // clicking Local/Cloud then set selectedFormat to undefined (those buttons
     // carry data-loc, not data-format), silently forcing M4A downloads back to
     // WAV, and the two toggles fought over the .active highlight.
-    let selectedFormat = 'wav';
+    // Remembered across reloads — mobile browsers discard background tabs, which
+    // silently reset an in-memory choice back to WAV.
+    let selectedFormat = localStorage.getItem('downloadFormat') === 'm4a' ? 'm4a' : 'wav';
     const downloadFormatBtns = document.querySelectorAll('#download-options .format-btn');
     downloadFormatBtns.forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.format === selectedFormat);
         btn.addEventListener('click', () => {
             downloadFormatBtns.forEach(b => b.classList.remove('active'));
             btn.classList.add('active');
             selectedFormat = btn.dataset.format;
+            localStorage.setItem('downloadFormat', selectedFormat);
         });
     });
 
@@ -1400,7 +1404,9 @@ document.addEventListener('DOMContentLoaded', () => {
                     finalBlob = await convertRes.blob();
                     log('Converted to M4A.', 'ok');
                 } else {
-                    log('M4A conversion failed. Downloading as WAV.', 'warn');
+                    const detail = await convertRes.text().catch(() => '');
+                    log(`M4A conversion failed (HTTP ${convertRes.status}) — downloading WAV instead. ${detail}`, 'error');
+                    alert('M4A conversion failed on the server — downloading as WAV instead.\n\nMost common cause: ffmpeg unavailable on the server. Check the Logs panel for details.');
                 }
             }
 

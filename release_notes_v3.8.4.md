@@ -1,4 +1,4 @@
-# Local TTS Studio v3.8.3
+# Local TTS Studio v3.8.4
 
 ## Google Docs → automatic TTS
 
@@ -51,3 +51,20 @@ fully generated project — no copy-paste, no clicking Generate.
   The WAV/M4A toggle shared a CSS class with the Local/Cloud generation
   toggle, so interacting with Local/Cloud silently reset the download
   format back to WAV. The toggles are now independent.
+
+## Fixes (3.8.4)
+
+- **M4A export works when the app runs from source** (e.g. as a remote
+  server). ffmpeg is only bundled into the packaged .app; running from
+  source relied on ffmpeg being on PATH, and when it wasn't, M4A conversion
+  and Clear Speech treatment failed silently and the download fell back to
+  WAV. The server now falls back to the ffmpeg binary checked into the
+  repo, and a failed conversion shows an error instead of quietly
+  downloading WAV.
+- The WAV/M4A download choice is now remembered across page reloads
+  (mobile browsers reload the tab often, which used to reset it to WAV).
+
+## UI (3.8.4)
+
+- The long help text under the Expressiveness slider and the Input Text
+  heading is tucked behind small ⓘ buttons — tap to show or hide it.
