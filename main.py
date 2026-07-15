@@ -2075,27 +2075,51 @@ async def convert_audio(
 
 @app.post("/api/export")
 async def export_audio(
-    files: List[UploadFile] = File(...),
+    files: List[UploadFile] = File(None),
+    project_id: str = Form(None),
+    file_ids: str = Form(None),
     treatment_type: str = Form("clear"),
     output_format: str = Form("wav"),
 ):
     """Merge segments, apply treatment, and convert — all in one server-side
-    pass so the full-length WAV never round-trips to the browser."""
-    if not files:
-        raise HTTPException(status_code=400, detail="No files provided")
+    pass so the full-length WAV never round-trips to the browser.
+
+    Segments come from either `files` (multipart uploads, for unsaved projects)
+    or `project_id` + `file_ids` (a JSON array of stored audio ids, read
+    straight from the project's audio dir — no upload at all)."""
     if treatment_type not in TREATMENT_FILTERS and treatment_type != "none":
         raise HTTPException(status_code=400, detail=f"Invalid treatment type. Must be 'none' or one of: {', '.join(TREATMENT_FILTERS)}")
     if output_format not in ("wav", "m4a"):
         raise HTTPException(status_code=400, detail="Invalid format. Must be one of: wav, m4a")
 
-    emit_log(f"Export: merging {len(files)} segments (treatment={treatment_type}, format={output_format})...", "info")
     export_t0 = _time.monotonic()
-
     merged_path = out_path = None
     try:
         file_contents = []
-        for file in files:
-            file_contents.append(await file.read())
+        if project_id and file_ids:
+            project_dir = _project_dir(project_id)
+            audio_dir = os.path.join(project_dir, "audio")
+            try:
+                ids = json.loads(file_ids)
+            except ValueError:
+                raise HTTPException(status_code=400, detail="file_ids must be a JSON array")
+            for fid in ids:
+                safe_id = _safe_para_id(str(fid))
+                for ext in ("flac", "wav"):
+                    audio_path = os.path.join(audio_dir, f"{safe_id}.{ext}")
+                    if os.path.exists(audio_path) and os.path.realpath(audio_path).startswith(os.path.realpath(project_dir)):
+                        with open(audio_path, "rb") as f:
+                            file_contents.append(f.read())
+                        break
+                else:
+                    raise HTTPException(status_code=404, detail=f"Stored audio not found for segment '{fid}' — regenerate it and try again.")
+        elif files:
+            for file in files:
+                file_contents.append(await file.read())
+        else:
+            raise HTTPException(status_code=400, detail="No segments provided")
+
+        emit_log(f"Export: merging {len(file_contents)} segments (treatment={treatment_type}, format={output_format})...", "info")
         merged_path = await asyncio.to_thread(_merge_contents_to_wav, file_contents)
         emit_log(f"Export: merge complete — {_time.monotonic() - export_t0:.1f}s", "info")
 
@@ -2145,6 +2169,8 @@ async def export_audio(
         traceback.print_exc()
         emit_log(f"Export FAILED after {_time.monotonic() - export_t0:.1f}s: {e}", "error")
         _remove_quietly(merged_path, out_path)
+        if isinstance(e, HTTPException):
+            raise
         raise HTTPException(status_code=500, detail=f"Failed to export audio: {str(e)}")
 
 @app.get("/api/check_update")

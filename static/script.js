@@ -1328,43 +1328,48 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     btnDownloadAll.addEventListener('click', async () => {
-        // Collect blobs — fetch from server if blob was not cached in memory
-        const blobsToMerge = (await Promise.all(
-            paragraphsData
-                .filter(p => p.status === 'done' && (p.audioBlob != null || p.audioUrl != null))
-                .map(async p => {
-                    if (p.audioBlob) return p.audioBlob;
-                    if (p.audioUrl) {
-                        const r = await fetch(p.audioUrl);
-                        if (!r.ok) return null;
-                        const b = await r.blob();
-                        p.audioBlob = b; // cache it
-                        return b;
-                    }
-                    return null;
-                })
-        )).filter(b => b != null);
-
-        if (blobsToMerge.length === 0) {
+        const doneParas = paragraphsData.filter(
+            p => p.status === 'done' && (p.audioBlob != null || p.audioUrl != null)
+        );
+        if (doneParas.length === 0) {
             log("No audio generated yet!", 'error');
             return;
         }
 
         btnDownloadAll.disabled = true;
         const originalText = btnDownloadAll.textContent;
-        btnDownloadAll.textContent = 'Processing...';
+        btnDownloadAll.textContent = 'Exporting...';
 
         try {
             // Single server-side pass: merge + treatment + format conversion.
             // The full-length WAV never round-trips to the browser.
             log('Exporting (merge + treatment' + (selectedFormat === 'm4a' ? ' + M4A' : '') + ')...');
-            btnDownloadAll.textContent = 'Exporting...';
             const formData = new FormData();
-            blobsToMerge.forEach((blob, idx) => {
-                formData.append('files', blob, `segment_${idx}.wav`);
-            });
             formData.append('treatment_type', 'clear');
             formData.append('output_format', selectedFormat === 'm4a' ? 'm4a' : 'wav');
+
+            // Saved project: every take already lives on the server's disk, so
+            // just send the stored-file ids — nothing to upload at all.
+            const allSaved = currentProjectId && doneParas.every(p => p.activeTake != null);
+            if (allSaved) {
+                formData.append('project_id', currentProjectId);
+                formData.append('file_ids', JSON.stringify(
+                    doneParas.map(p => takeFileId(p, p.activeTake))
+                ));
+            } else {
+                // Unsaved project: segments exist only in browser memory — upload them.
+                const blobs = await Promise.all(doneParas.map(async p => {
+                    if (p.audioBlob) return p.audioBlob;
+                    const r = await fetch(p.audioUrl);
+                    if (!r.ok) return null;
+                    const b = await r.blob();
+                    p.audioBlob = b; // cache it
+                    return b;
+                }));
+                blobs.filter(b => b != null).forEach((blob, idx) => {
+                    formData.append('files', blob, `segment_${idx}.wav`);
+                });
+            }
 
             const exportResponse = await fetch('/api/export', {
                 method: 'POST',
