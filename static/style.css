@@ -1614,3 +1614,20 @@ button:focus-visible {
         padding: 1.25rem;
     }
 }
+
+/* Fixed version badge — always visible bottom-left so you can confirm at a
+   glance which build the server is running. */
+.version-badge {
+    position: fixed;
+    bottom: 8px;
+    left: 10px;
+    z-index: 200;
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    background: var(--bg-color);
+    border: 1px solid var(--glass-border);
+    border-radius: 6px;
+    padding: 2px 7px;
+    opacity: 0.8;
+    pointer-events: none;
+}
