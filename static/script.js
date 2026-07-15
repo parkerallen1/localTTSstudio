@@ -96,6 +96,17 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     });
 
+    // --- Info buttons ("i" next to a title) toggle their hidden .hint text ---
+    document.querySelectorAll('.info-btn').forEach(btn => {
+        const hint = document.getElementById(btn.dataset.infoTarget);
+        if (!hint) return;
+        btn.addEventListener('click', () => {
+            const nowHidden = hint.classList.toggle('hidden');
+            btn.classList.toggle('open', !nowHidden);
+            btn.setAttribute('aria-expanded', String(!nowHidden));
+        });
+    });
+
     // --- Project Elements ---
     const projectNameInput = document.getElementById('project-name-input');
     const btnOpenProject = document.getElementById('btn-open-project');

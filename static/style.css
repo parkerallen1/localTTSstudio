@@ -278,6 +278,40 @@ h2 {
     background: rgba(127, 127, 127, 0.18);
 }
 
+/* Small round "i" toggle next to a title; shows/hides its .hint paragraph */
+.info-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.2rem;
+    height: 1.2rem;
+    padding: 0;          /* the global button rule's padding would stretch the circle */
+    font-weight: 400;
+    margin-left: 0.4rem;
+    border-radius: 50%;
+    border: 1px solid var(--glass-border);
+    background: var(--glass-bg);
+    color: var(--text-muted);
+    font-family: Georgia, 'Times New Roman', serif;
+    font-style: italic;
+    font-size: 0.75rem;
+    line-height: 1;
+    vertical-align: middle;
+    cursor: pointer;
+    transition: color 0.2s, border-color 0.2s, background 0.2s;
+}
+
+.info-btn:hover {
+    color: var(--text-main);
+    border-color: var(--primary);
+}
+
+.info-btn.open {
+    background: var(--primary);
+    border-color: var(--primary);
+    color: #fff;
+}
+
 .settings-grid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
