@@ -1286,26 +1286,55 @@ document.addEventListener('DOMContentLoaded', () => {
         btnCopyChapters.disabled = true;
         btnCopyChapters.textContent = 'Building...';
         try {
+            // Saved takes: ask the server for all durations in one request
+            // (it reads just the FLAC/WAV headers — instant). Downloading and
+            // decoding every take in the browser froze this on server projects.
+            const durations = new Map(); // para.id -> seconds
+            const saved = currentProjectId
+                ? paragraphsData.filter(p => p.activeTake != null)
+                : [];
+            if (saved.length > 0) {
+                const res = await fetch(`/api/projects/${currentProjectId}/audio_durations`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ file_ids: saved.map(p => takeFileId(p, p.activeTake)) })
+                });
+                if (res.ok) {
+                    const data = await res.json();
+                    saved.forEach((p, i) => {
+                        const d = (data.durations || [])[i];
+                        if (typeof d === 'number') durations.set(p.id, d);
+                    });
+                }
+            }
+
             // Walk all paragraphs in order to compute cumulative start times,
             // matching the merge (1s of silence between every segment).
             const chapters = [];
             let cursor = 0; // seconds
+            let walked = 0;
             for (const para of paragraphsData) {
                 if (para.chapter) {
                     chapters.push({ title: chapterTitle(para.text), start: Math.round(cursor) });
                 }
-                let blob = para.audioBlob;
-                if (!blob && para.audioUrl) {
-                    const r = await fetch(para.audioUrl);
-                    if (r.ok) {
-                        blob = await r.blob();
-                        para.audioBlob = blob; // cache
+                let dur = durations.get(para.id);
+                if (dur == null) {
+                    // Fallback for takes that only exist in browser memory
+                    // (unsaved projects): decode locally to measure.
+                    let blob = para.audioBlob;
+                    if (!blob && para.audioUrl) {
+                        const r = await fetch(para.audioUrl);
+                        if (r.ok) {
+                            blob = await r.blob();
+                            para.audioBlob = blob; // cache
+                        }
                     }
+                    if (blob) dur = await paragraphDuration(blob);
                 }
-                if (blob) {
-                    cursor += await paragraphDuration(blob);
-                }
+                if (dur != null) cursor += dur;
                 cursor += 1.0; // inter-segment silence inserted by /api/merge
+                walked += 1;
+                btnCopyChapters.textContent = `Building... ${walked}/${paragraphsData.length}`;
             }
 
             if (chapters.length === 0) {
@@ -1318,10 +1347,15 @@ document.addEventListener('DOMContentLoaded', () => {
             btnCopyChapters.textContent = 'Copied!';
             setTimeout(() => { btnCopyChapters.textContent = originalText; }, 1500);
         } catch (error) {
+            // Safari's decodeAudioData can reject with null, so don't assume
+            // error.message exists — that used to throw here and leave the
+            // button stuck on "Building...".
             console.error('Failed to build chapters shortcode:', error);
-            log(`Copy chapters failed: ${error.message}`, 'error');
-            btnCopyChapters.textContent = originalText;
+            log(`Copy chapters failed: ${(error && error.message) || error}`, 'error');
         } finally {
+            if (btnCopyChapters.textContent.startsWith('Building')) {
+                btnCopyChapters.textContent = originalText;
+            }
             btnCopyChapters.disabled = false;
             updateChaptersButtonState();
         }

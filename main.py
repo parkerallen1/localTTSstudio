@@ -1594,6 +1594,48 @@ def get_para_audio(project_id: str, para_id: str):
             return FileResponse(audio_path, media_type=media_type)
     raise HTTPException(status_code=404, detail="Audio not found")
 
+@app.post("/api/projects/{project_id}/audio_durations")
+async def get_audio_durations(project_id: str, request: Request):
+    """Return the duration (seconds) of stored takes without shipping the audio.
+
+    Body: {"file_ids": [str, ...]} → {"durations": [float|null, ...]} in the
+    same order (null = file missing/unreadable). Reading just the FLAC/WAV
+    header is instant, so the chapters builder gets every timestamp in one
+    request instead of downloading and decoding each take in the browser —
+    which stalled indefinitely on remote/server projects.
+    """
+    try:
+        data = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="JSON body required")
+    file_ids = data.get("file_ids")
+    if not isinstance(file_ids, list):
+        raise HTTPException(status_code=400, detail="file_ids must be a list")
+    project_dir = _project_dir(project_id)
+    if not os.path.exists(project_dir):
+        raise HTTPException(status_code=404, detail="Project not found")
+    audio_dir = os.path.join(project_dir, "audio")
+
+    def _read_durations():
+        durations = []
+        for file_id in file_ids:
+            safe_id = _safe_para_id(str(file_id))
+            duration = None
+            for ext in ("flac", "wav"):
+                audio_path = os.path.join(audio_dir, f"{safe_id}.{ext}")
+                if os.path.exists(audio_path):
+                    try:
+                        info = sf.info(audio_path)
+                        if info.samplerate:
+                            duration = info.frames / info.samplerate
+                    except Exception:
+                        duration = None
+                    break
+            durations.append(duration)
+        return durations
+
+    return {"durations": await asyncio.to_thread(_read_durations)}
+
 @app.delete("/api/projects/{project_id}/audio/{para_id}")
 def delete_para_audio(project_id: str, para_id: str):
     """Remove one stored audio file (used when the user discards a take)."""
