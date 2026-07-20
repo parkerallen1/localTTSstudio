@@ -1,6 +1,6 @@
 # -*- mode: python ; coding: utf-8 -*-
 #
-# PyInstaller build spec for "Local TTS Studio.app" (macOS).
+# PyInstaller build spec for "TTS Studio.app" (macOS).
 #
 # Bundles the desktop launcher (app_launcher.py) — which in turn imports the
 # FastAPI backend (main.py) — into a windowed .app. Notable bits:
@@ -13,7 +13,7 @@
 #   • Heavy unused libs are excluded to keep the bundle smaller.
 #
 # Build:  ./venv/bin/python -m PyInstaller LocalTTSStudio.spec --noconfirm
-# Output: dist/Local TTS Studio.app  (unsigned / not notarized).
+# Output: dist/TTS Studio.app  (unsigned / not notarized).
 import glob
 from PyInstaller.utils.hooks import collect_all
 
@@ -68,7 +68,7 @@ coll = COLLECT(
 )
 app = BUNDLE(
     coll,
-    name='Local TTS Studio.app',
+    name='TTS Studio.app',
     icon='local-tts-logo-new.icns',
     bundle_identifier='com.localtts.studio',
 )

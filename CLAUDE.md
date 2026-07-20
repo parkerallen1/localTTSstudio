@@ -1,4 +1,4 @@
-# Local TTS Studio
+# TTS Studio
 
 A local, offline text-to-speech desktop app for macOS. It runs Qwen3-TTS models
 on-device to turn long-form text (devotionals, scripts) into audio, paragraph by
@@ -78,9 +78,9 @@ The release process used in this repo:
 1. Bump `APP_VERSION` in `main.py` and add `release_notes_vX.Y.Z.md`.
 2. Commit and `git push origin main`.
 3. Build: `./venv/bin/python -m PyInstaller LocalTTSStudio.spec --noconfirm`
-   (output: `dist/Local TTS Studio.app`).
-4. Zip: `cd dist && ditto -c -k --sequesterRsrc --keepParent "Local TTS Studio.app" "Local.TTS.Studio.vX.Y.Z.zip"`.
-5. Release: `gh release create vX.Y.Z --title "..." --notes-file release_notes_vX.Y.Z.md --target main "dist/Local.TTS.Studio.vX.Y.Z.zip"`.
+   (output: `dist/TTS Studio.app`).
+4. Zip: `cd dist && ditto -c -k --sequesterRsrc --keepParent "TTS Studio.app" "TTS.Studio.vX.Y.Z.zip"`.
+5. Release: `gh release create vX.Y.Z --title "..." --notes-file release_notes_vX.Y.Z.md --target main "dist/TTS.Studio.vX.Y.Z.zip"`.
 
 The build is **unsigned / not notarized**, so first launch needs right-click →
 Open (Gatekeeper). The in-app updater (`/api/check_update`) compares

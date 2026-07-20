@@ -1,5 +1,5 @@
 /*
- * Local TTS Studio — frontend logic.
+ * TTS Studio — frontend logic.
  *
  * The single client-side script behind index.html. It talks to the FastAPI
  * backend (main.py) over the JSON API and drives the whole UI. Everything runs

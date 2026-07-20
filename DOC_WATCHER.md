@@ -1,7 +1,7 @@
 # Google Docs → TTS auto-import
 
 Share a Google Doc with a dedicated service-account email, and the machine
-running Local TTS Studio picks it up, parses it, and generates all the audio
+running TTS Studio picks it up, parses it, and generates all the audio
 automatically. Open the app later and the project is there, ready to edit and
 export.
 

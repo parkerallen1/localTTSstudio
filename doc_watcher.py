@@ -1,5 +1,5 @@
 """
-Google Docs watcher — auto-import shared docs into Local TTS Studio.
+Google Docs watcher — auto-import shared docs into TTS Studio.
 
 Share a Google Doc with a service account's email address and this script
 turns it into a generated TTS project automatically:
@@ -258,7 +258,7 @@ class Watcher:
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Watch Google Drive for shared docs and import them into Local TTS Studio.")
+    ap = argparse.ArgumentParser(description="Watch Google Drive for shared docs and import them into TTS Studio.")
     ap.add_argument("--config", default=DEFAULT_CONFIG, help=f"config file path (default {DEFAULT_CONFIG})")
     ap.add_argument("--once", action="store_true", help="poll a single time and exit (for cron)")
     args = ap.parse_args()

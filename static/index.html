@@ -1,6 +1,6 @@
 <!DOCTYPE html>
 <!--
-  Local TTS Studio — single-page UI markup.
+  TTS Studio — single-page UI markup.
 
   The only HTML page in the app, served at "/" by the FastAPI backend (main.py).
   All behavior lives in static/script.js (loaded at the bottom of <body>) and all
@@ -13,7 +13,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Local TTS Studio</title>
+    <title>TTS Studio</title>
     <link rel="stylesheet" href="/static/style.css?v=__APP_VERSION__">
 </head>
 
@@ -36,7 +36,7 @@
     <div class="container">
         <header>
             <div class="header-top">
-                <h1>Local TTS Studio
+                <h1>TTS Studio
                     <span class="info-tooltip" id="info-btn" title="">
                         <span class="info-icon">&#9432;</span>
                         <span class="info-popover">
@@ -49,7 +49,7 @@
                     </span>
                 </h1>
             </div>
-            <p class="subtitle">Local text-to-speech, runs entirely on your machine.</p>
+            <p class="subtitle">Text-to-speech studio for long-form audio.</p>
             <div class="header-badges">
                 <span class="global-status-badge idle" id="global-status-badge">Model Status: Idle</span>
                 <div id="gen-location-toggle" class="format-toggle gen-loc-toggle hidden"
@@ -214,7 +214,7 @@
     <div id="tutorial-modal" class="modal hidden">
         <div class="modal-content glass tutorial-modal-content">
             <div class="modal-header">
-                <h2>&#128218; How to Use Local TTS Studio</h2>
+                <h2>&#128218; How to Use TTS Studio</h2>
                 <button id="btn-close-tutorial-modal" class="close-btn">&times;</button>
             </div>
             <div class="modal-body">
@@ -244,8 +244,7 @@
                         <strong>Generate audio</strong>
                         <p>Click <strong>Generate All</strong> (or <kbd>&#8984;+Enter</kbd>) to synthesize every
                             paragraph, or use each card's <strong>Generate</strong> button one at a time. The
-                            first run downloads the model, which can take a few minutes &mdash; after that
-                            everything runs offline.</p>
+                            first run downloads the model, which can take a few minutes.</p>
                     </div>
                 </div>
                 <div class="tutorial-step">

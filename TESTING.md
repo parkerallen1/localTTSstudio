@@ -1,4 +1,4 @@
-# Local TTS Studio — Testing Guide
+# TTS Studio — Testing Guide
 
 ## Current Status
 
@@ -7,7 +7,7 @@ The app builds and starts successfully. The `qwen_tts` package now loads correct
 ## How to Launch
 
 ### From the .app bundle
-Double-click `/Applications/Local TTS Studio.app` (or from Dock).
+Double-click `/Applications/TTS Studio.app` (or from Dock).
 
 ### From source (if the .app has issues)
 ```bash
@@ -118,6 +118,6 @@ pkill -f LocalTTSStudio; lsof -ti tcp:8001 | xargs kill 2>/dev/null
 venv/bin/python3 -m PyInstaller LocalTTSStudio.spec --noconfirm
 
 # Install
-rm -rf "/Applications/Local TTS Studio.app"
-cp -R "dist/Local TTS Studio.app" "/Applications/Local TTS Studio.app"
+rm -rf "/Applications/TTS Studio.app"
+cp -R "dist/TTS Studio.app" "/Applications/TTS Studio.app"
 ```

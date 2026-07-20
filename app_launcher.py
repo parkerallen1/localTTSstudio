@@ -1,7 +1,7 @@
 """
-Local TTS Studio — desktop entrypoint / launcher.
+TTS Studio — desktop entrypoint / launcher.
 
-This is the script PyInstaller bundles as "Local TTS Studio.app" (see
+This is the script PyInstaller bundles as "TTS Studio.app" (see
 LocalTTSStudio.spec). It boots the FastAPI backend (main.py) and wraps it in a
 native-feeling macOS desktop experience around the browser-based UI.
 
@@ -50,7 +50,7 @@ if getattr(sys, 'frozen', False):
     _now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     _mac_ver = platform.mac_ver()[0] or "unknown"
     print("================================================================")
-    print("[LAUNCHER] Local TTS Studio starting")
+    print("[LAUNCHER] TTS Studio starting")
     print(f"[LAUNCHER] Time: {_now}")
     print(f"[LAUNCHER] Platform: {platform.system()} {platform.release()} {platform.machine()} (macOS {_mac_ver})")
     print(f"[LAUNCHER] Python: {sys.version.split()[0]}")
@@ -105,7 +105,7 @@ LOADING_HTML = """<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Local TTS Studio</title>
+<title>TTS Studio</title>
 <style>
   :root { --bg: #0d1117; --text: #e6edf3; --muted: #8b949e; --primary: #58a6ff; --green: #238636; }
   * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -137,8 +137,8 @@ LOADING_HTML = """<!DOCTYPE html>
 </head>
 <body>
 <div class="container">
-  <h1>Local TTS Studio</h1>
-  <p class="subtitle">Local text-to-speech, runs entirely on your machine.</p>
+  <h1>TTS Studio</h1>
+  <p class="subtitle">Text-to-speech studio for long-form audio.</p>
   <div class="spinner"></div>
   <p id="status">Starting server...</p>
   <p id="log-hint" style="display: none; color: var(--muted); font-size: 0.85rem; margin-top: 2rem; opacity: 0.8; line-height: 1.6;">
@@ -293,7 +293,7 @@ def start_server_thread():
 def shutdown():
     """Gracefully stop uvicorn (runs lifespan shutdown), clean up, and exit."""
     global _server, _server_thread
-    print("\n[LAUNCHER] Shutting down Local TTS Studio...")
+    print("\n[LAUNCHER] Shutting down TTS Studio...")
     sys.stdout.flush()
 
     if _server is not None:
@@ -365,7 +365,7 @@ def run_webview():
     webview.settings['ALLOW_DOWNLOADS'] = True
 
     window = webview.create_window(
-        "Local TTS Studio",
+        "TTS Studio",
         html=LOADING_HTML,
         width=1280,
         height=880,
@@ -397,13 +397,13 @@ def run_tk_fallback():
     import tkinter as tk
 
     root = tk.Tk()
-    root.title("Local TTS Studio")
+    root.title("TTS Studio")
     root.geometry("260x110")
     root.resizable(False, False)
 
     tk.Label(
         root,
-        text="Local TTS Studio is running.\n\nClick Quit or close this window\nto shut down the server.",
+        text="TTS Studio is running.\n\nClick Quit or close this window\nto shut down the server.",
         justify="center"
     ).pack(expand=True, pady=6)
 

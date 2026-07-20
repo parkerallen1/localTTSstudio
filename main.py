@@ -1,5 +1,5 @@
 """
-Local TTS Studio — backend server (FastAPI).
+TTS Studio — backend server (FastAPI).
 
 The heart of the app: a local FastAPI server that serves the web UI (static/)
 and exposes the JSON API the frontend (static/script.js) calls. It loads
@@ -77,7 +77,7 @@ import time as _time
 import text_parser
 from collections import deque
 
-APP_VERSION = "3.8.7" # Current application version
+APP_VERSION = "3.8.8" # Current application version
 GITHUB_REPO = "parkerallen1/localTTSstudio" # Actual repo for OTA updates
 
 # ─── Activity Log ─────────────────────────────────────────────────────────────
@@ -1179,7 +1179,7 @@ async def test_remote_server(request: Request):
     try:
         data = resp.json()
     except Exception:
-        return {"ok": False, "error": "Server responded, but not with a Local TTS Studio health payload."}
+        return {"ok": False, "error": "Server responded, but not with a TTS Studio health payload."}
     result = {"ok": True, "version": data.get("version"), "server_mode": bool(data.get("server_mode"))}
     if not result["server_mode"]:
         result["warning"] = "That server is not running in server mode — it may be someone's local instance."
@@ -1190,7 +1190,7 @@ static_dir = os.path.join(os.path.dirname(__file__), "static")
 os.makedirs(static_dir, exist_ok=True)
 if not os.path.exists(os.path.join(static_dir, "index.html")):
     with open(os.path.join(static_dir, "index.html"), "w") as f:
-        f.write("<html><body><h1>Local TTS Studio Placeholder</h1></body></html>")
+        f.write("<html><body><h1>TTS Studio Placeholder</h1></body></html>")
 app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
 @app.get("/")

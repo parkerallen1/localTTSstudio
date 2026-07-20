@@ -1,6 +1,6 @@
 # Remote generation server
 
-Local TTS Studio can offload audio synthesis to a shared always-on machine
+TTS Studio can offload audio synthesis to a shared always-on machine
 (e.g. a Mac mini) so teammates with slower Macs can still use it. Only
 `/api/generate` runs remotely — projects, voice profiles, merging, and exports
 all stay on each person's own machine. Voice-clone reference audio is uploaded
@@ -120,7 +120,7 @@ project list, already generated.
 
 ### B. In the desktop app — local projects, remote generation
 
-1. Open Local TTS Studio → **⚙ Settings → Remote**.
+1. Open TTS Studio → **⚙ Settings → Remote**.
 2. Paste the **Server URL** and **Access Token** you were given.
 3. Click **Test Connection** — you should see the server version.
 4. **Save.** All generation now runs on the server; leave the URL empty to go
