@@ -16,6 +16,9 @@ POST /api/projects/import   (parses paragraphs, generates audio in background)
         │
         ▼
 project appears in the app, fully generated
+        │  (optional: "email" config block)
+        ▼
+emails the finished M4A back to whoever shared the doc, + a link to edit it
 ```
 
 ## One-time Google Cloud setup (~10 minutes)
@@ -62,6 +65,8 @@ project appears in the app, fully generated
    - `settings` — per-import voice settings (same shape as a project's
      settings, e.g. `{"modelType": "CustomVoice", "speaker": "Ryan"}`).
      Leave empty to use the app-wide default (next step).
+   - `email` — optional; email the finished audio back to the sharer once
+     generation completes. See **Emailing finished audio back** below.
 
 3. Set the default voice for imported docs (once):
 
@@ -108,6 +113,64 @@ project appears in the app, fully generated
    launchctl load ~/Library/LaunchAgents/com.tts.docwatcher.plist
    tail -f /tmp/doc_watcher.log
    ```
+
+## Emailing finished audio back
+
+When generation for an imported doc finishes, the watcher can email the
+person who shared it — the merged **M4A** as an attachment, plus a reminder
+of the app URL to open if they want to edit or re-export. Add an `email`
+block to `doc_watcher.json`:
+
+```json
+"email": {
+  "enabled": true,
+  "smtp_host": "smtp.gmail.com",
+  "smtp_port": 587,
+  "smtp_user": "you@gmail.com",
+  "smtp_pass": "abcd efgh ijkl mnop",
+  "from_address": "",
+  "from_name": "TTS Studio",
+  "bcc": "you@gmail.com",
+  "reply_to": "",
+  "edit_url": "http://mini.your-tailnet.ts.net:8001",
+  "treatment": "clear"
+}
+```
+
+- **`smtp_pass` is a Gmail *App Password*, not your login password.** Create
+  one at <https://myaccount.google.com/apppasswords> (needs 2-Step
+  Verification enabled). It's a 16-character code; spaces are fine.
+- `from_address` — defaults to `smtp_user` if blank. Gmail sends as the
+  authenticated account regardless.
+- `bcc` — you're BCC'd on every send for oversight. Leave `""` to disable.
+- `edit_url` — the app URL the recipient should open to edit. `127.0.0.1`
+  isn't reachable from another machine, so use the host's Tailscale name/IP
+  (e.g. `http://mini.your-tailnet.ts.net:8001`). The app has no per-project
+  deep link yet, so the email tells them to open the project **by name**.
+- `treatment` — audio treatment applied on export (same options as the app's
+  export dropdown; `"clear"` is the default, `"none"` for raw).
+
+**Who gets the email:** Drive tells us who shared the doc with the service
+account (`sharingUser`, falling back to the document's owner). If neither is
+available (e.g. some Shared Drive items), the watcher logs a warning and skips
+the email for that doc — it never guesses a recipient.
+
+**Reliability:** the email is only attempted after `import_status` is `done`.
+A failed export or send is retried on the next poll, up to 5 times, then
+marked `failed` in the state file. Each doc is emailed once.
+
+**Test the SMTP setup** without waiting for a real doc:
+
+```bash
+./venv/bin/python - <<'PY'
+import doc_watcher, json, os
+cfg = json.load(open(os.path.expanduser("~/.qwen_tts_studio/doc_watcher.json")))
+w = doc_watcher.Watcher(cfg)
+w.send_completion_email("you@gmail.com", "You", "Test Doc",
+                        m4a_bytes=None, have_audio=False)
+print("sent")
+PY
+```
 
 ## Day-to-day use
 

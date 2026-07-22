@@ -12,6 +12,9 @@ turns it into a generated TTS project automatically:
      falls back to Drive's whole-document Markdown export.
   3. POSTs it to the app's /api/projects/import endpoint, which parses it into
      paragraphs and generates audio for each one in the background.
+  4. (Optional) Once generation finishes, emails the finished audio back to the
+     person who shared the doc — an M4A attachment plus a reminder of the app
+     URL to open if they want to edit it. Enable via the "email" config block.
 
 Each doc is imported ONCE (tracked in a state file by doc id); edits to an
 already-imported doc are logged but ignored — re-share a copy to regenerate.
@@ -28,8 +31,21 @@ Setup (one-time, see DOC_WATCHER.md for the full walkthrough):
         "app_token": "",              // only if the app runs in server mode
         "poll_seconds": 120,
         "folder_id": "",              // optional: watch one folder only
-        "settings": {}                // optional per-import voice settings;
+        "settings": {},               // optional per-import voice settings;
                                       // empty -> app's import_defaults
+        "email": {                    // optional: email finished audio back
+          "enabled": true,
+          "smtp_host": "smtp.gmail.com",
+          "smtp_port": 587,
+          "smtp_user": "you@gmail.com",
+          "smtp_pass": "gmail app password",  // NOT your login password
+          "from_address": "",         // defaults to smtp_user
+          "from_name": "TTS Studio",
+          "bcc": "you@gmail.com",     // get a copy of every send (oversight)
+          "reply_to": "",             // optional
+          "edit_url": "http://mini.tailnet:8001",  // reachable app URL
+          "treatment": "clear"        // export treatment (see /api/export)
+        }
       }
 
 Run:  python doc_watcher.py [--once] [--config PATH]
@@ -38,9 +54,12 @@ Keep it running with launchd/cron on the machine that hosts the app.
 import argparse
 import json
 import os
+import re
+import smtplib
 import sys
 import time
 from datetime import datetime
+from email.message import EmailMessage
 
 import requests
 
@@ -101,6 +120,13 @@ DEFAULT_DIR = os.path.expanduser("~/.qwen_tts_studio")
 DEFAULT_CONFIG = os.path.join(DEFAULT_DIR, "doc_watcher.json")
 STATE_FILE = os.path.join(DEFAULT_DIR, "doc_watcher_state.json")
 
+# Give up emailing a doc after this many failed export/send attempts (one per
+# poll) so a permanently-broken recipient/SMTP config doesn't retry forever.
+MAX_EMAIL_ATTEMPTS = 5
+# Gmail rejects messages over 25 MB; stay under it and fall back to a link-only
+# email when the audio is bigger.
+MAX_ATTACH_BYTES = 24 * 1024 * 1024
+
 
 def log(msg, level="info"):
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [{level}] {msg}", flush=True)
@@ -132,6 +158,7 @@ class Watcher:
         self.app_token = (config.get("app_token") or "").strip()
         self.folder_id = (config.get("folder_id") or "").strip()
         self.settings = config.get("settings") or None
+        self.email = config.get("email") or {}
         self.state = load_json(STATE_FILE, {})
 
     def _google_headers(self):
@@ -155,7 +182,8 @@ class Watcher:
         while True:
             params = {
                 "q": query,
-                "fields": "nextPageToken, files(id, name, modifiedTime, webViewLink)",
+                "fields": ("nextPageToken, files(id, name, modifiedTime, webViewLink, "
+                           "owners(emailAddress,displayName), sharingUser(emailAddress,displayName))"),
                 "pageSize": 100,
                 "includeItemsFromAllDrives": "true",
                 "supportsAllDrives": "true",
@@ -245,16 +273,219 @@ class Watcher:
             except requests.RequestException as e:
                 log(f"Failed to import \"{doc['name']}\": {e} — will retry next poll.", "error")
                 continue
+            sharer_email, sharer_name = self._pick_recipient(doc)
+            email_on = bool(self.email.get("enabled"))
             self.state[doc["id"]] = {
                 "name": doc["name"],
                 "modified_time": doc.get("modifiedTime"),
                 "project_id": result.get("id"),
                 "imported_at": datetime.now().astimezone().isoformat(),
+                "doc_url": doc.get("webViewLink"),
+                "sharer_email": sharer_email,
+                "sharer_name": sharer_name,
+                # "pending" -> the email pass will send once generation is done.
+                # "skipped" -> emailing off, or we couldn't identify the sharer.
+                "email_status": "pending" if (email_on and sharer_email) else "skipped",
+                "email_attempts": 0,
             }
             save_state(self.state)
             log(f"Imported \"{doc['name']}\" — project {result.get('id')}, "
                 f"{result.get('para_count')} paragraph(s), generation started.", "ok")
+            if email_on and sharer_email:
+                log(f"Will email \"{doc['name']}\" to {sharer_email} when audio finishes.")
+            elif email_on:
+                log(f"Emailing on, but couldn't determine who shared \"{doc['name']}\" "
+                    f"— no completion email will be sent.", "warn")
+
+        if self.email.get("enabled"):
+            self.email_completed_docs()
         return len(docs)
+
+    def _pick_recipient(self, doc):
+        """Who shared this doc with us. Prefer Drive's sharingUser (the person
+        who shared it with the service account); fall back to the doc owner."""
+        su = doc.get("sharingUser") or {}
+        if su.get("emailAddress"):
+            return su["emailAddress"], su.get("displayName")
+        owners = doc.get("owners") or []
+        if owners and owners[0].get("emailAddress"):
+            return owners[0]["emailAddress"], owners[0].get("displayName")
+        return None, None
+
+    # ---- Completion emails -------------------------------------------------
+
+    def email_completed_docs(self):
+        """For each imported doc whose audio has finished generating, export the
+        merged M4A and email it back to the person who shared the doc.
+
+        Runs every poll. Only touches state entries flagged email_status ==
+        "pending"; a send failure leaves the entry pending (retried next poll)
+        until MAX_EMAIL_ATTEMPTS, then it's marked "failed"."""
+        changed = False
+        for doc_id, info in self.state.items():
+            if info.get("email_status") != "pending":
+                continue
+            project_id = info.get("project_id")
+            to_email = info.get("sharer_email")
+            if not project_id or not to_email:
+                info["email_status"] = "skipped"
+                changed = True
+                continue
+
+            try:
+                r = requests.get(f"{self.app_url}/api/projects/{project_id}",
+                                 headers=self._app_headers(), timeout=30)
+                if r.status_code == 404:
+                    log(f"Project for \"{info.get('name')}\" is gone — not emailing.", "warn")
+                    info["email_status"] = "skipped"
+                    changed = True
+                    continue
+                r.raise_for_status()
+                project = r.json()
+            except requests.RequestException as e:
+                log(f"Couldn't check status of \"{info.get('name')}\" ({e}) — will retry.", "warn")
+                continue
+
+            status = str(project.get("import_status") or "")
+            if not status.startswith("done"):
+                continue  # still generating (or pending) — check again next poll
+
+            # Build the ordered list of stored audio ids (active take per paragraph).
+            file_ids = [
+                f"{p['id']}-t{p['activeTake']}"
+                for p in project.get("paragraphs", [])
+                if p.get("hasAudio") and p.get("activeTake")
+            ]
+            had_failures = status != "done"  # "done (N of M failed)"
+
+            m4a_bytes = None
+            try:
+                if file_ids:
+                    m4a_bytes = self.export_m4a(project_id, file_ids)
+                    if len(m4a_bytes) > MAX_ATTACH_BYTES:
+                        log(f"\"{info.get('name')}\" audio is "
+                            f"{len(m4a_bytes) // (1024 * 1024)} MB — too big to attach; "
+                            f"sending a link-only email.", "warn")
+                        m4a_bytes = None
+            except requests.RequestException as e:
+                changed |= self._note_email_attempt(info, f"export failed: {e}")
+                continue
+
+            try:
+                self.send_completion_email(
+                    to_email=to_email,
+                    to_name=info.get("sharer_name"),
+                    doc_name=info.get("name") or "your document",
+                    m4a_bytes=m4a_bytes,
+                    had_failures=had_failures,
+                    have_audio=bool(file_ids),
+                )
+            except Exception as e:
+                changed |= self._note_email_attempt(info, f"send failed: {e}")
+                continue
+
+            info["email_status"] = "sent"
+            info["emailed_at"] = datetime.now().astimezone().isoformat()
+            changed = True
+            log(f"Emailed finished audio for \"{info.get('name')}\" to {to_email}.", "ok")
+
+        if changed:
+            save_state(self.state)
+
+    def _note_email_attempt(self, info, reason):
+        """Record a failed export/send attempt; give up after the cap. Returns
+        True (state changed) so callers can OR it into their changed flag."""
+        attempts = int(info.get("email_attempts", 0)) + 1
+        info["email_attempts"] = attempts
+        if attempts >= MAX_EMAIL_ATTEMPTS:
+            info["email_status"] = "failed"
+            log(f"Giving up emailing \"{info.get('name')}\" after {attempts} "
+                f"attempts — {reason}", "error")
+        else:
+            log(f"Email attempt {attempts}/{MAX_EMAIL_ATTEMPTS} for "
+                f"\"{info.get('name')}\" — {reason} — will retry.", "warn")
+        return True
+
+    def export_m4a(self, project_id, file_ids):
+        """Ask the app to merge the project's segments and encode to M4A."""
+        data = {
+            "project_id": project_id,
+            "file_ids": json.dumps(file_ids),
+            "output_format": "m4a",
+            "treatment_type": self.email.get("treatment", "clear"),
+        }
+        r = requests.post(f"{self.app_url}/api/export", data=data,
+                          headers=self._app_headers(), timeout=600)
+        r.raise_for_status()
+        return r.content
+
+    def send_completion_email(self, to_email, to_name, doc_name, m4a_bytes,
+                              had_failures=False, have_audio=True):
+        cfg = self.email
+        from_addr = (cfg.get("from_address") or cfg.get("smtp_user") or "").strip()
+        edit_url = (cfg.get("edit_url") or self.app_url).rstrip("/")
+        first = (to_name or "").split(" ")[0].strip()
+        greeting = f"Hi {first}," if first else "Hi,"
+
+        lines = [greeting, ""]
+        if m4a_bytes:
+            lines.append(f'The audio for "{doc_name}" is ready — it\'s attached as an M4A.')
+        elif have_audio:
+            lines.append(f'The audio for "{doc_name}" is ready. It was too large to '
+                         f'attach here, so open TTS Studio to download it.')
+        else:
+            lines.append(f'The project "{doc_name}" finished processing, but no audio '
+                         f'was generated. Open TTS Studio to take a look.')
+        if had_failures:
+            lines.append("")
+            lines.append("Note: some paragraphs didn't generate — you may want to "
+                         "review and regenerate them in the app.")
+        lines += [
+            "",
+            "Want to make edits or re-export? Open TTS Studio here:",
+            f"  {edit_url}",
+            f'Then open the project named "{doc_name}".',
+            "",
+            "— TTS Studio (automated message)",
+        ]
+
+        msg = EmailMessage()
+        from_name = cfg.get("from_name") or "TTS Studio"
+        msg["From"] = f"{from_name} <{from_addr}>" if from_name else from_addr
+        msg["To"] = to_email
+        if cfg.get("reply_to"):
+            msg["Reply-To"] = cfg["reply_to"]
+        msg["Subject"] = f"Your audio is ready: {doc_name}"
+        msg.set_content("\n".join(lines))
+
+        if m4a_bytes:
+            fname = re.sub(r'[^\w\-. ]', "_", doc_name).strip() or "audio"
+            msg.add_attachment(m4a_bytes, maintype="audio", subtype="mp4",
+                               filename=f"{fname}.m4a")
+
+        # Recipients passed explicitly so the BCC address stays off the headers.
+        recipients = [to_email]
+        bcc = (cfg.get("bcc") or "").strip()
+        if bcc:
+            recipients.append(bcc)
+
+        host = cfg.get("smtp_host", "smtp.gmail.com")
+        port = int(cfg.get("smtp_port", 587))
+        user = cfg.get("smtp_user", "")
+        password = cfg.get("smtp_pass", "")
+        if port == 465:
+            with smtplib.SMTP_SSL(host, port, timeout=60) as s:
+                if user:
+                    s.login(user, password)
+                s.send_message(msg, to_addrs=recipients)
+        else:
+            with smtplib.SMTP(host, port, timeout=60) as s:
+                s.ehlo()
+                s.starttls()
+                s.ehlo()
+                if user:
+                    s.login(user, password)
+                s.send_message(msg, to_addrs=recipients)
 
 
 def main():
