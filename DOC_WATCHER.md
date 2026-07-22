@@ -118,17 +118,51 @@ emails the finished M4A back to whoever shared the doc, + a link to edit it
 
 When generation for an imported doc finishes, the watcher can email the
 person who shared it — the merged **M4A** as an attachment, plus a reminder
-of the app URL to open if they want to edit or re-export. Add an `email`
-block to `doc_watcher.json`:
+of the app URL to open if they want to edit or re-export.
+
+Sending uses the **Gmail API over OAuth** (Google's recommended path, not an
+app password). You grant consent once with `gmail_auth.py`; the watcher then
+sends headlessly using the stored refresh token.
+
+### One-time: authorize sending (`gmail_auth.py`)
+
+In the **same Google Cloud project** as the Drive service account:
+
+1. **APIs & Services → Library →** enable **Gmail API**.
+2. **APIs & Services → OAuth consent screen:**
+   - User type **External**; add your Gmail under **Test users**.
+   - Then click **PUBLISH APP** (Production). This matters — while an app is in
+     *Testing*, Google **expires its refresh tokens after 7 days**, which would
+     silently break the pipeline weekly. Published apps don't. You'll still get
+     an "unverified app" screen at consent time; it's your own app, click through.
+3. **APIs & Services → Credentials → Create Credentials → OAuth client ID →**
+   Application type **Desktop app**. Download the client-secret JSON.
+
+Then, **on a machine with a browser** (e.g. your Mac):
+
+```bash
+./venv/bin/pip install google-auth-oauthlib
+./venv/bin/python gmail_auth.py --client-secrets /path/to/client_secret.json
+```
+
+A browser opens — sign in as the account emails should come **from** and
+approve. A token is written to `~/.qwen_tts_studio/gmail_token.json`. If the
+watcher runs on a different machine (the mini), copy that token file over:
+
+```bash
+scp ~/.qwen_tts_studio/gmail_token.json mini:~/.qwen_tts_studio/
+```
+
+`google-auth-oauthlib` is only needed for this one-time step; the watcher
+itself sends with `google-auth` (already installed).
+
+### Config: the `email` block
 
 ```json
 "email": {
   "enabled": true,
-  "smtp_host": "smtp.gmail.com",
-  "smtp_port": 587,
-  "smtp_user": "you@gmail.com",
-  "smtp_pass": "abcd efgh ijkl mnop",
-  "from_address": "",
+  "oauth_token": "~/.qwen_tts_studio/gmail_token.json",
+  "from_address": "you@gmail.com",
   "from_name": "TTS Studio",
   "bcc": "you@gmail.com",
   "reply_to": "",
@@ -137,12 +171,11 @@ block to `doc_watcher.json`:
 }
 ```
 
-- **`smtp_pass` is a Gmail *App Password*, not your login password.** Create
-  one at <https://myaccount.google.com/apppasswords> (needs 2-Step
-  Verification enabled). It's a 16-character code; spaces are fine.
-- `from_address` — defaults to `smtp_user` if blank. Gmail sends as the
-  authenticated account regardless.
+- `oauth_token` — path to the token from `gmail_auth.py`. Blank = the default
+  `~/.qwen_tts_studio/gmail_token.json`.
+- `from_address` — the Gmail you consented as. Gmail sends as that account.
 - `bcc` — you're BCC'd on every send for oversight. Leave `""` to disable.
+  (Delivered via a Bcc header, which Gmail strips from the recipient's copy.)
 - `edit_url` — the app URL the recipient should open to edit. `127.0.0.1`
   isn't reachable from another machine, so use the host's Tailscale name/IP
   (e.g. `http://mini.your-tailnet.ts.net:8001`). The app has no per-project
@@ -159,16 +192,16 @@ the email for that doc — it never guesses a recipient.
 A failed export or send is retried on the next poll, up to 5 times, then
 marked `failed` in the state file. Each doc is emailed once.
 
-**Test the SMTP setup** without waiting for a real doc:
+**Test it** without waiting for a real doc (sends a link-only email to you):
 
 ```bash
 ./venv/bin/python - <<'PY'
 import doc_watcher, json, os
 cfg = json.load(open(os.path.expanduser("~/.qwen_tts_studio/doc_watcher.json")))
 w = doc_watcher.Watcher(cfg)
-w.send_completion_email("you@gmail.com", "You", "Test Doc",
-                        m4a_bytes=None, have_audio=False)
-print("sent")
+addr = cfg["email"].get("from_address")
+w.send_completion_email(addr, "You", "Test Doc", m4a_bytes=None, have_audio=False)
+print("sent to", addr)
 PY
 ```
 

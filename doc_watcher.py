@@ -35,11 +35,9 @@ Setup (one-time, see DOC_WATCHER.md for the full walkthrough):
                                       // empty -> app's import_defaults
         "email": {                    // optional: email finished audio back
           "enabled": true,
-          "smtp_host": "smtp.gmail.com",
-          "smtp_port": 587,
-          "smtp_user": "you@gmail.com",
-          "smtp_pass": "gmail app password",  // NOT your login password
-          "from_address": "",         // defaults to smtp_user
+          "oauth_token": "",          // path to gmail_auth.py's token file
+                                      // (default ~/.qwen_tts_studio/gmail_token.json)
+          "from_address": "you@gmail.com",  // the Gmail you consented as
           "from_name": "TTS Studio",
           "bcc": "you@gmail.com",     // get a copy of every send (oversight)
           "reply_to": "",             // optional
@@ -48,14 +46,18 @@ Setup (one-time, see DOC_WATCHER.md for the full walkthrough):
         }
       }
 
+Completion emails use the Gmail API over OAuth (Google's recommended path,
+not an app password): run gmail_auth.py ONCE to grant consent and write the
+token file, then point "email.oauth_token" at it. See DOC_WATCHER.md.
+
 Run:  python doc_watcher.py [--once] [--config PATH]
 Keep it running with launchd/cron on the machine that hosts the app.
 """
 import argparse
+import base64
 import json
 import os
 import re
-import smtplib
 import sys
 import time
 from datetime import datetime
@@ -65,12 +67,15 @@ import requests
 
 try:
     from google.oauth2 import service_account
+    from google.oauth2.credentials import Credentials as UserCredentials
     from google.auth.transport.requests import Request as GoogleAuthRequest
 except ImportError:
     sys.exit("Missing dependency: pip install google-auth")
 
 DRIVE_API = "https://www.googleapis.com/drive/v3"
 DOCS_API = "https://docs.googleapis.com/v1"
+GMAIL_SEND_URL = "https://gmail.googleapis.com/gmail/v1/users/me/messages/send"
+GMAIL_SEND_SCOPE = ["https://www.googleapis.com/auth/gmail.send"]
 # drive.readonly also authorizes Docs API reads (documents.get accepts it).
 SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
 
@@ -119,6 +124,8 @@ def docs_json_to_markdown(document_tab):
 DEFAULT_DIR = os.path.expanduser("~/.qwen_tts_studio")
 DEFAULT_CONFIG = os.path.join(DEFAULT_DIR, "doc_watcher.json")
 STATE_FILE = os.path.join(DEFAULT_DIR, "doc_watcher_state.json")
+# OAuth token written by gmail_auth.py; used to send completion emails.
+DEFAULT_GMAIL_TOKEN = os.path.join(DEFAULT_DIR, "gmail_token.json")
 
 # Give up emailing a doc after this many failed export/send attempts (one per
 # poll) so a permanently-broken recipient/SMTP config doesn't retry forever.
@@ -419,10 +426,27 @@ class Watcher:
         r.raise_for_status()
         return r.content
 
+    def _gmail_credentials(self):
+        """Load (and refresh) the OAuth user credentials written by gmail_auth.py.
+        Cached on the instance; google-auth refreshes the access token in memory
+        from the stored refresh token, so no re-consent is needed."""
+        creds = getattr(self, "_gmail_creds", None)
+        if creds is None:
+            token_path = os.path.expanduser(self.email.get("oauth_token") or DEFAULT_GMAIL_TOKEN)
+            if not os.path.exists(token_path):
+                raise RuntimeError(
+                    f"Gmail OAuth token not found: {token_path} — run "
+                    f"gmail_auth.py once to authorize sending (see DOC_WATCHER.md).")
+            creds = UserCredentials.from_authorized_user_file(token_path, GMAIL_SEND_SCOPE)
+            self._gmail_creds = creds
+        if not creds.valid:
+            creds.refresh(GoogleAuthRequest())
+        return creds
+
     def send_completion_email(self, to_email, to_name, doc_name, m4a_bytes,
                               had_failures=False, have_audio=True):
         cfg = self.email
-        from_addr = (cfg.get("from_address") or cfg.get("smtp_user") or "").strip()
+        from_addr = (cfg.get("from_address") or "").strip()
         edit_url = (cfg.get("edit_url") or self.app_url).rstrip("/")
         first = (to_name or "").split(" ")[0].strip()
         greeting = f"Hi {first}," if first else "Hi,"
@@ -451,8 +475,14 @@ class Watcher:
 
         msg = EmailMessage()
         from_name = cfg.get("from_name") or "TTS Studio"
-        msg["From"] = f"{from_name} <{from_addr}>" if from_name else from_addr
+        if from_addr:
+            msg["From"] = f"{from_name} <{from_addr}>" if from_name else from_addr
         msg["To"] = to_email
+        # Gmail delivers to a Bcc header and strips it from the copy other
+        # recipients receive, so the oversight copy stays hidden.
+        bcc = (cfg.get("bcc") or "").strip()
+        if bcc:
+            msg["Bcc"] = bcc
         if cfg.get("reply_to"):
             msg["Reply-To"] = cfg["reply_to"]
         msg["Subject"] = f"Your audio is ready: {doc_name}"
@@ -463,29 +493,15 @@ class Watcher:
             msg.add_attachment(m4a_bytes, maintype="audio", subtype="mp4",
                                filename=f"{fname}.m4a")
 
-        # Recipients passed explicitly so the BCC address stays off the headers.
-        recipients = [to_email]
-        bcc = (cfg.get("bcc") or "").strip()
-        if bcc:
-            recipients.append(bcc)
-
-        host = cfg.get("smtp_host", "smtp.gmail.com")
-        port = int(cfg.get("smtp_port", 587))
-        user = cfg.get("smtp_user", "")
-        password = cfg.get("smtp_pass", "")
-        if port == 465:
-            with smtplib.SMTP_SSL(host, port, timeout=60) as s:
-                if user:
-                    s.login(user, password)
-                s.send_message(msg, to_addrs=recipients)
-        else:
-            with smtplib.SMTP(host, port, timeout=60) as s:
-                s.ehlo()
-                s.starttls()
-                s.ehlo()
-                if user:
-                    s.login(user, password)
-                s.send_message(msg, to_addrs=recipients)
+        creds = self._gmail_credentials()
+        raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
+        r = requests.post(
+            GMAIL_SEND_URL,
+            headers={"Authorization": f"Bearer {creds.token}"},
+            json={"raw": raw},
+            timeout=120,
+        )
+        r.raise_for_status()
 
 
 def main():
