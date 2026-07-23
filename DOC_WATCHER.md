@@ -192,16 +192,18 @@ the email for that doc — it never guesses a recipient.
 A failed export or send is retried on the next poll, up to 5 times, then
 marked `failed` in the state file. Each doc is emailed once.
 
-**Test it** without waiting for a real doc (sends a link-only email to you):
+**Test it** without waiting for a real doc (sends a link-only email to your
+`bcc` address). Run it **from the repo directory** so `doc_watcher` imports:
 
 ```bash
+cd /path/to/localTTSstudio    # the repo dir (where doc_watcher.py lives)
 ./venv/bin/python - <<'PY'
 import doc_watcher, json, os
 cfg = json.load(open(os.path.expanduser("~/.qwen_tts_studio/doc_watcher.json")))
 w = doc_watcher.Watcher(cfg)
-addr = cfg["email"].get("from_address")
-w.send_completion_email(addr, "You", "Test Doc", m4a_bytes=None, have_audio=False)
-print("sent to", addr)
+to = cfg["email"].get("bcc") or cfg["email"].get("from_address")
+w.send_completion_email(to, "You", "Test Doc", m4a_bytes=None, have_audio=False)
+print("sent to", to)
 PY
 ```
 
