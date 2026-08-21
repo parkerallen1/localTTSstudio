@@ -1518,6 +1518,61 @@ def get_project(project_id: str):
         raise HTTPException(status_code=404, detail="Project not found")
     return project
 
+def _chapter_title(text):
+    """First sentence of a paragraph (everything up to the first period) —
+    mirrors chapterTitle() in static/script.js."""
+    t = (text or "").strip()
+    dot = t.find(".")
+    return (t if dot == -1 else t[:dot]).strip()
+
+@app.get("/api/projects/{project_id}/chapters")
+def get_project_chapters(project_id: str):
+    """Chapter markers with their start time inside the merged export.
+
+    Same output as the UI's "Copy Chapters Shortcode" button, computed
+    server-side from the stored audio so non-browser callers (the Docs
+    watcher's completion email) can get it too: `title` is the paragraph's
+    first sentence, `start` is its offset in seconds within the merged audio,
+    including the 1 s pause _merge_contents_to_wav inserts between segments."""
+    project = _load_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    project_dir = _project_dir(project_id)
+    audio_dir = os.path.join(project_dir, "audio")
+
+    chapters = []
+    cursor = 0.0     # seconds into the merged audio
+    segments = 0     # segments placed so far (gaps go between them)
+    for para in project.get("paragraphs", []):
+        duration = None
+        if para.get("hasAudio"):
+            # Take 0 (and pre-takes projects) is stored under the bare para id.
+            take = para.get("activeTake")
+            file_id = para["id"] if not take else f"{para['id']}-t{take}"
+            safe_id = _safe_para_id(file_id)
+            for ext in ("flac", "wav"):
+                audio_path = os.path.join(audio_dir, f"{safe_id}.{ext}")
+                if os.path.exists(audio_path) and os.path.realpath(audio_path).startswith(os.path.realpath(project_dir)):
+                    try:
+                        info = sf.info(audio_path)
+                        duration = info.frames / info.samplerate if info.samplerate else 0.0
+                    except Exception as e:
+                        emit_log(f"Chapters: couldn't read duration of {safe_id}: {e}", "warn")
+                    break
+        if duration is not None and segments:
+            cursor += 1.0  # inter-segment silence, before this paragraph starts
+        if para.get("isChapter"):
+            chapters.append({"title": _chapter_title(para.get("text")), "start": int(round(cursor))})
+        if duration is not None:
+            cursor += duration
+            segments += 1
+
+    return {
+        "chapters": chapters,
+        "shortcode": json.dumps(chapters, indent=2),
+        "duration": int(round(cursor)),
+    }
+
 @app.put("/api/projects/{project_id}")
 async def update_project(project_id: str, request: Request):
     project = _load_project(project_id)
