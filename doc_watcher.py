@@ -13,8 +13,9 @@ turns it into a generated TTS project automatically:
   3. POSTs it to the app's /api/projects/import endpoint, which parses it into
      paragraphs and generates audio for each one in the background.
   4. (Optional) Once generation finishes, emails the finished audio back to the
-     person who shared the doc — an M4A attachment plus a reminder of the app
-     URL to open if they want to edit it. Enable via the "email" config block.
+     person who shared the doc — an M4A attachment, the chapters shortcode for
+     that audio, plus a reminder of the app URL to open if they want to edit
+     it. Enable via the "email" config block.
 
 Each doc is imported ONCE (tracked in a state file by doc id); edits to an
 already-imported doc are logged but ignored — re-share a copy to regenerate.
@@ -378,6 +379,13 @@ class Watcher:
                 changed |= self._note_email_attempt(info, f"export failed: {e}")
                 continue
 
+            # Chapter markers for the finished audio (same JSON the app's
+            # "Copy Chapters Shortcode" button produces). Best-effort: a
+            # failure here shouldn't hold back the audio.
+            chapters_shortcode = None
+            if file_ids:
+                chapters_shortcode = self.fetch_chapters_shortcode(project_id, info.get("name"))
+
             try:
                 self.send_completion_email(
                     to_email=to_email,
@@ -386,6 +394,7 @@ class Watcher:
                     m4a_bytes=m4a_bytes,
                     had_failures=had_failures,
                     have_audio=bool(file_ids),
+                    chapters_shortcode=chapters_shortcode,
                 )
             except Exception as e:
                 changed |= self._note_email_attempt(info, f"send failed: {e}")
@@ -412,6 +421,23 @@ class Watcher:
             log(f"Email attempt {attempts}/{MAX_EMAIL_ATTEMPTS} for "
                 f"\"{info.get('name')}\" — {reason} — will retry.", "warn")
         return True
+
+    def fetch_chapters_shortcode(self, project_id, doc_name=None):
+        """Ask the app for the project's chapters shortcode (the JSON array of
+        {title, start} the UI copies). Returns the JSON string, or None if
+        there are no chapters or the app couldn't build it."""
+        try:
+            r = requests.get(f"{self.app_url}/api/projects/{project_id}/chapters",
+                             headers=self._app_headers(), timeout=120)
+            r.raise_for_status()
+            data = r.json()
+        except (requests.RequestException, ValueError) as e:
+            log(f"Couldn't build chapters shortcode for \"{doc_name}\" ({e}) "
+                f"— emailing the audio without it.", "warn")
+            return None
+        if not data.get("chapters"):
+            return None
+        return data.get("shortcode") or json.dumps(data["chapters"], indent=2)
 
     def export_m4a(self, project_id, file_ids):
         """Ask the app to merge the project's segments and encode to M4A."""
@@ -444,7 +470,8 @@ class Watcher:
         return creds
 
     def send_completion_email(self, to_email, to_name, doc_name, m4a_bytes,
-                              had_failures=False, have_audio=True):
+                              had_failures=False, have_audio=True,
+                              chapters_shortcode=None):
         cfg = self.email
         from_addr = (cfg.get("from_address") or "").strip()
         edit_url = (cfg.get("edit_url") or self.app_url).rstrip("/")
@@ -464,6 +491,13 @@ class Watcher:
             lines.append("")
             lines.append("Note: some paragraphs didn't generate — you may want to "
                          "review and regenerate them in the app.")
+        if chapters_shortcode:
+            lines += [
+                "",
+                "Chapters shortcode (start times in seconds, matching the audio above):",
+                "",
+                chapters_shortcode,
+            ]
         lines += [
             "",
             "Want to make edits or re-export? Open TTS Studio here:",

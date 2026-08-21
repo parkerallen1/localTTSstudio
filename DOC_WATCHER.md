@@ -18,7 +18,7 @@ POST /api/projects/import   (parses paragraphs, generates audio in background)
 project appears in the app, fully generated
         │  (optional: "email" config block)
         ▼
-emails the finished M4A back to whoever shared the doc, + a link to edit it
+emails the M4A + chapters shortcode to whoever shared the doc, + a link to edit
 ```
 
 ## One-time Google Cloud setup (~10 minutes)
@@ -117,8 +117,14 @@ emails the finished M4A back to whoever shared the doc, + a link to edit it
 ## Emailing finished audio back
 
 When generation for an imported doc finishes, the watcher can email the
-person who shared it — the merged **M4A** as an attachment, plus a reminder
-of the app URL to open if they want to edit or re-export.
+person who shared it — the merged **M4A** as an attachment, the **chapters
+shortcode** for that audio, plus a reminder of the app URL to open if they
+want to edit or re-export.
+
+The shortcode is the same JSON array the app's **Copy Chapters Shortcode**
+button produces (`[{"title": ..., "start": <seconds>}, ...]`), fetched from
+`GET /api/projects/<id>/chapters` so the start times line up with the attached
+M4A. Docs with no chapter-marked paragraphs simply omit that section.
 
 Sending uses the **Gmail API over OAuth** (Google's recommended path, not an
 app password). You grant consent once with `gmail_auth.py`; the watcher then
@@ -189,6 +195,8 @@ available (e.g. some Shared Drive items), the watcher logs a warning and skips
 the email for that doc — it never guesses a recipient.
 
 **Reliability:** the email is only attempted after `import_status` is `done`.
+If the chapters lookup fails, the email still goes out — just without the
+shortcode.
 A failed export or send is retried on the next poll, up to 5 times, then
 marked `failed` in the state file. Each doc is emailed once.
 
