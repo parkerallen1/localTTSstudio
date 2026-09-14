@@ -1290,35 +1290,59 @@ document.addEventListener('DOMContentLoaded', () => {
         btnCopyChapters.disabled = true;
         btnCopyChapters.textContent = 'Building...';
         try {
-            // Walk all paragraphs in order to compute cumulative start times,
-            // matching the merge (1s of silence between every segment).
-            const chapters = [];
-            let cursor = 0; // seconds
-            for (const para of paragraphsData) {
-                if (para.chapter) {
-                    chapters.push({ title: chapterTitle(para.text), start: Math.round(cursor) });
+            // Ask the backend: it reads each file's duration from the audio
+            // header (sf.info) instead of downloading and decoding every
+            // paragraph, so this is one request instead of one per paragraph.
+            // Flush pending edits first — chapter toggles are debounced, and
+            // the endpoint computes from the saved project.
+            let shortcode = null;
+            if (currentProjectId) {
+                if (hasUnsavedChanges) await saveCurrentProject();
+                const r = await fetch(`/api/projects/${currentProjectId}/chapters`);
+                if (r.ok) {
+                    const data = await r.json();
+                    if (!data.chapters || data.chapters.length === 0) {
+                        log('No chapters marked.', 'error');
+                        return;
+                    }
+                    shortcode = data.shortcode;
+                } else {
+                    log('Chapters request failed — computing locally instead.', 'warn');
                 }
-                let blob = para.audioBlob;
-                if (!blob && para.audioUrl) {
-                    const r = await fetch(para.audioUrl);
-                    if (r.ok) {
+            }
+
+            if (shortcode === null) {
+                // Unsaved project, or the request failed: fall back to walking
+                // the paragraphs in the browser. Same cumulative start times,
+                // but it has to decode every paragraph's audio to measure it.
+                const chapters = [];
+                let cursor = 0; // seconds
+                for (const para of paragraphsData) {
+                    if (para.chapter) {
+                        chapters.push({ title: chapterTitle(para.text), start: Math.round(cursor) });
+                    }
+                    let blob = para.audioBlob;
+                    if (!blob && para.audioUrl) {
+                        const r = await fetch(para.audioUrl);
+                        if (!r.ok) throw new Error(`couldn't load audio for paragraph ${chapters.length + 1}`);
                         blob = await r.blob();
                         para.audioBlob = blob; // cache
                     }
+                    if (blob) {
+                        cursor += await paragraphDuration(blob);
+                    }
+                    cursor += 1.0; // inter-segment silence inserted by /api/merge
                 }
-                if (blob) {
-                    cursor += await paragraphDuration(blob);
+
+                if (chapters.length === 0) {
+                    log('No chapters marked.', 'error');
+                    return;
                 }
-                cursor += 1.0; // inter-segment silence inserted by /api/merge
+                shortcode = JSON.stringify(chapters, null, 2);
             }
 
-            if (chapters.length === 0) {
-                log('No chapters marked.', 'error');
-                return;
-            }
-
-            await copyToClipboard(JSON.stringify(chapters, null, 2));
-            log(`Chapters shortcode copied (${chapters.length} chapter(s)).`, 'ok');
+            await copyToClipboard(shortcode);
+            log(`Chapters shortcode copied (${JSON.parse(shortcode).length} chapter(s)).`, 'ok');
             btnCopyChapters.textContent = 'Copied!';
             setTimeout(() => { btnCopyChapters.textContent = originalText; }, 1500);
         } catch (error) {
