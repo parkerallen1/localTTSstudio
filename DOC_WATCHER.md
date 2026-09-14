@@ -87,7 +87,7 @@ emails the M4A + chapters shortcode to whoever shared the doc, + a link to edit
    ```
 
    To keep it running permanently, install it as a launchd agent —
-   `~/Library/LaunchAgents/com.tts.docwatcher.plist`:
+   `~/Library/LaunchAgents/com.localtts.docwatcher.plist`:
 
    ```xml
    <?xml version="1.0" encoding="UTF-8"?>
@@ -95,7 +95,7 @@ emails the M4A + chapters shortcode to whoever shared the doc, + a link to edit
      "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
    <plist version="1.0">
    <dict>
-     <key>Label</key><string>com.tts.docwatcher</string>
+     <key>Label</key><string>com.localtts.docwatcher</string>
      <key>ProgramArguments</key>
      <array>
        <string>/PATH/TO/REPO/venv/bin/python</string>
@@ -103,15 +103,18 @@ emails the M4A + chapters shortcode to whoever shared the doc, + a link to edit
      </array>
      <key>RunAtLoad</key><true/>
      <key>KeepAlive</key><true/>
-     <key>StandardOutPath</key><string>/tmp/doc_watcher.log</string>
-     <key>StandardErrorPath</key><string>/tmp/doc_watcher.log</string>
+     <key>StandardOutPath</key><string>/tmp/localtts-docwatcher.log</string>
+     <key>StandardErrorPath</key><string>/tmp/localtts-docwatcher.log</string>
    </dict>
    </plist>
    ```
 
    ```bash
-   launchctl load ~/Library/LaunchAgents/com.tts.docwatcher.plist
-   tail -f /tmp/doc_watcher.log
+   launchctl load ~/Library/LaunchAgents/com.localtts.docwatcher.plist
+   tail -f /tmp/localtts-docwatcher.log
+
+   # after a git pull, restart it so the new code is actually running
+   launchctl kickstart -k gui/$(id -u)/com.localtts.docwatcher
    ```
 
 ## Emailing finished audio back
@@ -222,8 +225,17 @@ PY
   Activity Log; the project appears in the project list immediately.
 - Each doc is imported **once**. Editing a doc after import is ignored (the
   watcher logs a warning) — share a fresh copy to regenerate.
-- State lives in `~/.qwen_tts_studio/doc_watcher_state.json`; delete a doc's
-  entry there to force a re-import.
+- Re-sharing the **same** doc does nothing: state is keyed by Drive file id,
+  so the watcher sees it as already imported. Deleting the project in the app
+  doesn't change that — the watcher keeps no link to the project.
+- To force a re-import, remove the doc's entry from
+  `~/.qwen_tts_studio/doc_watcher_state.json` **and restart the watcher**.
+  The running process loads that file only at startup and writes its in-memory
+  copy back on the next poll, so editing the file alone is silently undone:
+
+  ```bash
+  launchctl kickstart -k gui/$(id -u)/com.localtts.docwatcher
+  ```
 
 ## Notes
 
