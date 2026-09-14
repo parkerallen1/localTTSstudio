@@ -215,6 +215,9 @@ class Watcher:
                              params={"mimeType": mime},
                              headers=self._google_headers(), timeout=60)
             if r.status_code == 200:
+                # Drive's export sends no charset, so requests would fall back
+                # to ISO-8859-1 and mangle every emoji and smart quote.
+                r.encoding = "utf-8"
                 return r.text
         r.raise_for_status()
 

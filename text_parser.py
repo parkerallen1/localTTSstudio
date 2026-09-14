@@ -23,6 +23,27 @@ CHAPTER_EXCLUDE = {
 }
 
 
+# A run of UTF-8 bytes that were mistakenly decoded as Latin-1: a lead byte
+# (U+00C2-U+00F4) followed by 1-3 continuation bytes (U+0080-U+00BF). e.g. a
+# Drive export read as Latin-1 turns "\U0001f4a3" into "\u00f0\u009f\u0092\u00a3".
+_MOJIBAKE_RUN = regex.compile(r'(?:[\u00c2-\u00f4][\u0080-\u00bf]{1,3})+')
+
+
+def repair_mojibake(text: str) -> str:
+    """Undo UTF-8-decoded-as-Latin-1 damage, run by run.
+
+    Only sequences that re-encode to valid UTF-8 are replaced, so text that is
+    already correct passes through untouched (the function is idempotent).
+    Without this, mangled emojis survive the Extended_Pictographic strip in
+    clean_text_general and the TTS model reads the garbage aloud."""
+    def fix(match):
+        try:
+            return match.group(0).encode('latin-1').decode('utf-8')
+        except (UnicodeEncodeError, UnicodeDecodeError):
+            return match.group(0)
+    return _MOJIBAKE_RUN.sub(fix, text)
+
+
 def heading_key(text: str) -> str:
     """Normalize a heading to a comparison key: drop emojis/markdown/punctuation,
     collapse whitespace, lowercase. e.g. "**🧘 Settle in**" -> "settle in"."""
@@ -165,6 +186,7 @@ def parse_paragraphs(raw_text: str, bible_mode: bool = False):
     Returns a list of {"text": str, "chapter": bool} dicts — the same output
     the frontend's Parse button produces from the same input.
     """
+    raw_text = repair_mojibake(raw_text)
     items = []
     for raw_line in raw_text.split('\n'):
         trimmed = raw_line.strip()
@@ -196,6 +218,7 @@ def parse_paragraphs(raw_text: str, bible_mode: bool = False):
 
 def derive_title(raw_text: str) -> str:
     """Use the first non-empty line (the document's title) as the project name."""
+    raw_text = repair_mojibake(raw_text)
     for line in raw_text.split('\n'):
         line = line.strip()
         if line:

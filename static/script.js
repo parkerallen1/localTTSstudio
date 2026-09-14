@@ -761,8 +761,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Parse text area into paragraphs
     btnParse.addEventListener('click', async () => {
-        const rawText = textInput.value.trim();
+        // Text pasted from a bad export can arrive as UTF-8-decoded-as-Latin-1
+        // ("\u00F0\u009F\u0092\u00A3" instead of "\u{1F4A3}"). Heal it first and write it
+        // back, so the mangling isn't saved with the project either.
+        const rawText = repairMojibake(textInput.value.trim());
         if (!rawText) return;
+        textInput.value = rawText;
 
         const bibleCheckbox = document.getElementById('bible-text-mode');
         const bibleMode = bibleCheckbox && bibleCheckbox.checked;
@@ -1788,6 +1792,23 @@ document.addEventListener('DOMContentLoaded', () => {
         'humor break',
         'bring the inspiration with you',
     ]);
+
+    // A run of UTF-8 bytes that were mistakenly decoded as Latin-1: a lead byte
+    // (U+00C2-U+00F4) followed by 1-3 continuation bytes (U+0080-U+00BF), e.g.
+    // "\u{1F4A3}" arriving as "\u00F0\u009F\u0092\u00A3". Only runs that
+    // re-decode as valid UTF-8 are replaced, so clean text passes through
+    // untouched. Keep in sync with repair_mojibake() in text_parser.py.
+    function repairMojibake(text) {
+        return text.replace(/(?:[\u00c2-\u00f4][\u0080-\u00bf]{1,3})+/g, (run) => {
+            const bytes = new Uint8Array(run.length);
+            for (let i = 0; i < run.length; i++) bytes[i] = run.charCodeAt(i);
+            try {
+                return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+            } catch (e) {
+                return run;
+            }
+        });
+    }
 
     // Normalize a heading to a comparison key: drop emojis/markdown/punctuation,
     // collapse whitespace, lowercase. e.g. "**🧘 Settle in**" -> "settle in".

@@ -1453,7 +1453,9 @@ async def import_project(request: Request):
         data = await request.json()
     except Exception:
         raise HTTPException(status_code=400, detail="JSON body required")
-    raw_text = str(data.get("raw_text") or "").strip()
+    # Heal UTF-8-decoded-as-Latin-1 text before it's stored as the project's
+    # rawText, so re-parsing in the UI doesn't reintroduce the mangling.
+    raw_text = text_parser.repair_mojibake(str(data.get("raw_text") or "").strip())
     if not raw_text:
         raise HTTPException(status_code=400, detail="raw_text is required")
 
