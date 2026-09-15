@@ -19,6 +19,12 @@ project appears in the app, fully generated
         │  (optional: "email" config block)
         ▼
 emails the M4A + chapters shortcode to whoever shared the doc, + a link to edit
+        │  (optional: "wordpress" config block)
+        ▼
+finds the post with the same title, uploads the M4A, sets its ACF fields
+        │  (no single title match?)
+        ▼
+emails you the closest matches; reply with the post link and it publishes there
 ```
 
 ## One-time Google Cloud setup (~10 minutes)
@@ -217,6 +223,137 @@ w.send_completion_email(to, "You", "Test Doc", m4a_bytes=None, have_audio=False)
 print("sent to", to)
 PY
 ```
+
+## Attaching the audio to a WordPress post
+
+With a `wordpress` block configured, the watcher goes one step further: once a
+doc's audio is ready it finds the post with the same title, uploads the M4A to
+the media library, and sets the ACF fields that point the post at it.
+
+It works over SSH + wp-cli, which matters for two reasons:
+
+- The M4A is streamed to the server and imported with `wp media import`, so it
+  never passes through PHP's upload-size limit. A 45-minute devotional is fine.
+- Fields are set with ACF's own `update_field()`. A plain `wp post meta update`
+  writes the value but skips the `_fieldname` -> field-key row ACF needs, which
+  leaves the field looking empty in the post editor if it had never been set.
+
+The watcher never changes a post's status. It only sets the fields you name,
+on a post that already exists.
+
+### One-time: SSH access
+
+The watcher machine needs a key that can reach the install's SSH gateway:
+
+```bash
+ssh-copy-id -i ~/.ssh/wpengine_ed25519.pub install@install.ssh.wpengine.net
+ssh install@install.ssh.wpengine.net 'wp --version'
+```
+
+On WP Engine you add the public key under **Users → SSH keys** in the portal
+rather than with `ssh-copy-id`. Copy the private key to the watcher machine and
+`chmod 600` it. Confirm ACF is really loaded there:
+
+```bash
+ssh install@install.ssh.wpengine.net 'cd sites/install && wp eval "var_dump(function_exists(\"update_field\"));"'
+```
+
+If that prints `bool(false)`, ACF is not active and there is nothing to write
+into — the watcher will say so and stop rather than guess.
+
+### Finding your ACF field names
+
+`audio_field` and the keys of `extra_fields` take either an ACF field *name* or
+a field *key* (`field_6f2a1b...`). The key is the more reliable of the two,
+since names can repeat across field groups. List what a post actually has:
+
+```bash
+ssh install@install.ssh.wpengine.net 'cd sites/install && wp eval "
+  foreach ( acf_get_field_groups( array( \"post_id\" => 123 ) ) as \$g ) {
+    echo \$g[\"title\"], \"\\n\";
+    foreach ( acf_get_fields( \$g ) as \$f ) {
+      echo \"  \", \$f[\"name\"], \"  (\", \$f[\"key\"], \")  \", \$f[\"type\"], \"\\n\";
+    }
+  }"'
+```
+
+Use `"audio_field_format": "attachment_id"` for an ACF File or Audio field
+(ACF stores the attachment ID) and `"url"` for a plain text or URL field.
+
+### Config: the `wordpress` block
+
+```json
+"wordpress": {
+  "enabled": true,
+  "ssh_host": "install@install.ssh.wpengine.net",
+  "ssh_key": "~/.ssh/wpengine_ed25519",
+  "wp_path": "/home/wpe-user/sites/install",
+  "site_url": "https://example.com",
+  "post_types": ["post"],
+  "audio_field": "audio_file",
+  "audio_field_format": "attachment_id",
+  "extra_fields": { "chapters": "{chapters}" },
+  "notify": "you@gmail.com",
+  "flush_cache": true,
+  "dry_run": false
+}
+```
+
+| Key | What it does |
+|-----|--------------|
+| `ssh_host` / `ssh_key` | How to reach the install. `ssh_key` is optional if your agent already has it. |
+| `wp_path` | Directory wp-cli runs in — the WordPress root. |
+| `site_url` | Only used to build view/edit links in the emails. |
+| `post_types` | Which types to search for a title match. |
+| `audio_field` | ACF field the audio goes into. Required. |
+| `audio_field_format` | `attachment_id` (File/Audio fields) or `url` (text fields). |
+| `extra_fields` | Other ACF fields to set. Values may use `{chapters}`, `{doc_name}`, `{doc_url}`. |
+| `notify` | Who gets asked "which post?" and told when it lands. Defaults to whoever shared the doc. |
+| `flush_cache` | Run `wp page-cache flush` after writing, so the public page isn't stale. |
+| `dry_run` | Match, report, and write nothing. Worth leaving on for the first few docs. |
+
+`extra_fields` is where the chapters shortcode goes if you keep it on the post:
+`{ "chapters": "{chapters}" }` writes the same JSON the app's **Copy Chapters
+Shortcode** button produces.
+
+### When no post matches
+
+Doc titles and post titles drift — curly vs straight quotes, en dashes,
+casing — so titles are normalized on both sides before comparing. That absorbs
+the punctuation differences, but not a genuinely different title.
+
+When exactly one post matches, the watcher publishes on its own. Otherwise it
+emails `notify` with the closest matches as tappable links and parks the doc.
+Reply to that email with the post's URL (or its numeric ID) and the next poll
+attaches the audio there and confirms.
+
+Reading that reply needs the `gmail.readonly` scope, which the send-only token
+doesn't have:
+
+```bash
+python gmail_auth.py --client-secrets /path/to/client_secret.json --with-replies
+```
+
+Google classes `gmail.readonly` as a **restricted** scope, so its consent
+screen is sterner than `gmail.send`'s and an unverified app is capped at 100
+users. That's fine for one person, but it's the part of this setup most likely
+to give you trouble. If you'd rather not grant it, leave the token as-is:
+everything else still works, and the watcher just emails you about the
+stragglers and waits — it reads nothing and those docs stay unpublished until
+you attach them by hand.
+
+The watcher only ever reads the threads it started, and only accepts an answer
+from the address it asked.
+
+### Notes
+
+- Docs imported before you enabled the `wordpress` block have no `wp_status`
+  in the state file and are deliberately left alone — enabling this doesn't
+  retro-publish your back catalogue.
+- A publish failure retries once per poll, five times, then emails you and
+  gives up. The audio itself is unaffected; export it from the app by hand.
+- Nothing here changes `post_status`. A draft stays a draft, and the
+  confirmation email says so.
 
 ## Day-to-day use
 

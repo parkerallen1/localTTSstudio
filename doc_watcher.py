@@ -16,6 +16,11 @@ turns it into a generated TTS project automatically:
      person who shared the doc — an M4A attachment, the chapters shortcode for
      that audio, plus a reminder of the app URL to open if they want to edit
      it. Enable via the "email" config block.
+  5. (Optional) Attaches that audio to the WordPress post with the same title,
+     over SSH + wp-cli: uploads the M4A to the media library and sets the ACF
+     fields that point the post at it. If no single post title matches, it
+     emails asking which post, and publishes once you reply with the link.
+     Enable via the "wordpress" config block.
 
 Each doc is imported ONCE (tracked in a state file by doc id); edits to an
 already-imported doc are logged but ignored — re-share a copy to regenerate.
@@ -44,8 +49,29 @@ Setup (one-time, see DOC_WATCHER.md for the full walkthrough):
           "reply_to": "",             // optional
           "edit_url": "http://mini.tailnet:8001",  // reachable app URL
           "treatment": "clear"        // export treatment (see /api/export)
+        },
+        "wordpress": {                // optional: attach audio to a post
+          "enabled": true,
+          "ssh_host": "install@install.ssh.wpengine.net",
+          "ssh_key": "~/.ssh/wpengine_ed25519",
+          "wp_path": "/home/wpe-user/sites/install",  // where wp-cli runs
+          "site_url": "https://example.com",          // for links in emails
+          "post_types": ["post"],
+          "audio_field": "audio_file",       // ACF field name or field key
+          "audio_field_format": "attachment_id",  // or "url"
+          "extra_fields": {                  // {chapters} {doc_name} {doc_url}
+            "chapters": "{chapters}"
+          },
+          "notify": "you@gmail.com",   // who gets asked / told; defaults to
+                                       // whoever shared the doc
+          "flush_cache": true,         // clear WP Engine's page cache after
+          "dry_run": false             // true = match and report, write nothing
         }
       }
+
+The WordPress step never changes a post's status — it only sets the fields
+you name on a post that already exists. Set "dry_run": true for the first few
+docs to watch what it would match before it writes anything.
 
 Completion emails use the Gmail API over OAuth (Google's recommended path,
 not an app password): run gmail_auth.py ONCE to grant consent and write the

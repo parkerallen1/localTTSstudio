@@ -38,7 +38,8 @@ FLAC under the project → user downloads a merged WAV/M4A via `/api/merge` +
 | `LocalTTSStudio.spec` | PyInstaller build spec for the `.app`. |
 | `text_parser.py` | Python port of the frontend's Markdown→paragraphs pipeline (keep in sync with `script.js`). Used by `/api/projects/import`. |
 | `doc_watcher.py` | Standalone Google Docs watcher: polls Drive for docs shared with a service account, imports them via `/api/projects/import`. Not bundled into the .app. |
-| `DOC_WATCHER.md` | Setup guide for the Google Docs auto-import pipeline (service account, config, launchd). |
+| `wp_publisher.py` | WordPress hand-off over SSH + wp-cli: title matching, media upload, ACF writes. Used by `doc_watcher.py`; not bundled into the .app. |
+| `DOC_WATCHER.md` | Setup guide for the Google Docs auto-import pipeline (service account, config, launchd, WordPress hand-off). |
 | `SERVER.md` | How to run the app as a shared remote generation server (token auth + tunnel). |
 | `migrate_audio_to_flac.py` | One-time WAV→FLAC migration for existing projects. |
 | `download_model.py`, `test_*.py` | Dev helpers / ad-hoc smoke tests (not run by the app). |
