@@ -150,5 +150,44 @@ info = {"name": "Old Doc", "project_id": "proj-0", "email_status": "sent"}
 check("untouched", w._finish_doc(info), False)
 check("no wp_status invented", info.get("wp_status"), None)
 
+print("\n--- reading the reply ---")
+import base64
+from doc_watcher import _message_text, _first_post_reference
+
+
+def gmail_text(text):
+    return {"mimeType": "text/plain",
+            "body": {"data": base64.urlsafe_b64encode(text.encode()).decode().rstrip("=")}}
+
+
+PHONE_REPLY = """https://deepspirituality.com/faith-over-fear/
+
+Sent from my iPhone
+
+On Sep 15, 2026, at 9:02 AM, TTS Studio <tts@example.com> wrote:
+
+Closest matches - if it's one of these, reply with its link:
+  https://example.com/?p=11
+"""
+MULTIPART = {"mimeType": "multipart/alternative", "parts": [
+    {"mimeType": "text/html",
+     "body": {"data": base64.urlsafe_b64encode(b"<p>ignored</p>").decode()}},
+    gmail_text("it's this one: https://deepspirituality.com/?p=4821 thanks"),
+]}
+
+check("phone reply beats the quoted original",
+      _first_post_reference(_message_text(gmail_text(PHONE_REPLY))),
+      "https://deepspirituality.com/faith-over-fear/")
+check("html multipart falls back to the text part",
+      _first_post_reference(_message_text(MULTIPART)),
+      "https://deepspirituality.com/?p=4821")
+check("trailing punctuation trimmed",
+      _first_post_reference("use https://x.com/a-post/."), "https://x.com/a-post/")
+check("bare post id accepted", _first_post_reference("4821"), "4821")
+check("links inside a > quote are not mistaken for an answer",
+      _first_post_reference(_message_text(gmail_text("no idea\n> https://example.com/?p=11\n"))),
+      None)
+check("empty reply", _first_post_reference(_message_text(gmail_text("\n\n"))), None)
+
 print(f"\n{len(PASS)} passed, {len(FAIL)} failed")
 sys.exit(1 if FAIL else 0)

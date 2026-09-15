@@ -79,7 +79,11 @@ except ImportError:
 DRIVE_API = "https://www.googleapis.com/drive/v3"
 DOCS_API = "https://docs.googleapis.com/v1"
 GMAIL_SEND_URL = "https://gmail.googleapis.com/gmail/v1/users/me/messages/send"
-GMAIL_SEND_SCOPE = ["https://www.googleapis.com/auth/gmail.send"]
+GMAIL_THREADS_URL = "https://gmail.googleapis.com/gmail/v1/users/me/threads"
+# gmail.readonly is only needed for the WordPress "which post?" reply loop; a
+# token granted just gmail.send still sends fine and fails loudly on reads.
+GMAIL_SCOPES = ["https://www.googleapis.com/auth/gmail.send",
+                "https://www.googleapis.com/auth/gmail.readonly"]
 # drive.readonly also authorizes Docs API reads (documents.get accepts it).
 SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
 
@@ -137,6 +141,9 @@ MAX_EMAIL_ATTEMPTS = 5
 # Same idea for the WordPress hand-off: a bad SSH key or a missing ACF field
 # shouldn't retry against the live site forever.
 MAX_WP_ATTEMPTS = 5
+# How many times we'll write back saying "that reply didn't have a post link"
+# before leaving the doc alone.
+MAX_REPLY_PROMPTS = 3
 # Gmail rejects messages over 25 MB; stay under it and fall back to a link-only
 # email when the audio is bigger.
 MAX_ATTACH_BYTES = 24 * 1024 * 1024
@@ -320,6 +327,8 @@ class Watcher:
                 log(f"Emailing on, but couldn't determine who shared \"{doc['name']}\" "
                     f"— no completion email will be sent.", "warn")
 
+        if self.wordpress.get("enabled"):
+            self.check_replies()
         if self.email.get("enabled") or self.wordpress.get("enabled"):
             self.finish_completed_docs()
         return len(docs)
@@ -672,6 +681,114 @@ class Watcher:
         except Exception as e:
             log(f"Couldn't send the failure notice for \"{name}\": {e}", "warn")
 
+    # ---- Reading the reply -------------------------------------------------
+
+    def check_replies(self):
+        """Look for answers to the \"which post is this?\" emails.
+
+        Each ask recorded its Gmail thread id, so this reads those threads
+        only — never the rest of the mailbox. A reply that names a post moves
+        the doc back to "pending" and the next completion pass publishes it."""
+        waiting = [i for i in self.state.values()
+                   if i.get("wp_status") == "awaiting_reply" and i.get("wp_thread_id")]
+        if not waiting:
+            return
+        changed = False
+        for info in waiting:
+            try:
+                changed |= self._check_reply(info)
+            except PermissionError as e:
+                log(str(e), "error")
+                return  # the token is short a scope; the rest will fail the same way
+            except Exception as e:
+                log(f"Couldn't check for a reply about \"{info.get('name')}\": {e}", "warn")
+        if changed:
+            save_state(self.state)
+
+    def _check_reply(self, info):
+        """One doc's thread. Returns True if state changed."""
+        name = info.get("name") or "document"
+        expect_from = self._wp_notify_address(info).lower()
+        creds = self._gmail_credentials()
+        r = requests.get(
+            f"{GMAIL_THREADS_URL}/{info['wp_thread_id']}",
+            params={"format": "full"},
+            headers={"Authorization": f"Bearer {creds.token}"},
+            timeout=60,
+        )
+        if r.status_code in (401, 403):
+            raise PermissionError(
+                "Gmail refused to read the reply thread — the saved token is "
+                "authorized to send but not to read. Re-run gmail_auth.py to "
+                "add the gmail.readonly scope, then restart the watcher.")
+        r.raise_for_status()
+
+        ours = (self.email.get("from_address") or "").lower()
+        for message in r.json().get("messages", []):
+            headers = {h["name"].lower(): h["value"]
+                       for h in message.get("payload", {}).get("headers", [])}
+            sender = (headers.get("from") or "").lower()
+            if ours and ours in sender:
+                continue  # our own ask
+            if expect_from and expect_from not in sender:
+                log(f"Ignoring a reply about \"{name}\" from {headers.get('from')!r} "
+                    f"— only {expect_from} can name the post.", "warn")
+                continue
+            if message.get("id") in (info.get("wp_seen_replies") or []):
+                continue
+            info.setdefault("wp_seen_replies", []).append(message.get("id"))
+            return self._apply_reply(info, _message_text(message.get("payload", {})))
+        return False
+
+    def _apply_reply(self, info, body):
+        """Turn the human's reply into a post id, or ask again."""
+        name = info.get("name") or "document"
+        target = _first_post_reference(body)
+        if not target:
+            return self._reply_problem(
+                info, "I couldn't find a post link in that reply.")
+        try:
+            post = self._wp_publisher().find_post_by_url(target)
+        except WordPressError as e:
+            return self._reply_problem(info, f"I couldn't open {target} — {e}.")
+
+        info["wp_post_id"] = post["ID"]
+        info["wp_post_title"] = post.get("post_title")
+        info["wp_status"] = "pending"   # the next completion pass publishes it
+        info["wp_attempts"] = 0
+        log(f"Reply for \"{name}\" points at post {post['ID']} "
+            f"(\"{post.get('post_title')}\") — publishing.", "ok")
+        return True
+
+    def _reply_problem(self, info, message):
+        """Tell them the reply didn't work, but don't get into a loop about it."""
+        name = info.get("name") or "document"
+        tries = int(info.get("wp_reply_errors", 0)) + 1
+        info["wp_reply_errors"] = tries
+        log(f"Reply about \"{name}\": {message}", "warn")
+        if tries > MAX_REPLY_PROMPTS:
+            info["wp_status"] = "failed"
+            log(f"Giving up on \"{name}\" after {tries} unusable replies — "
+                f"attach the audio by hand.", "error")
+            return True
+        to_email = self._wp_notify_address(info)
+        if to_email:
+            try:
+                self.send_mail(
+                    to_email, f"Still need the post for \"{name}\"",
+                    "\n".join([
+                        message,
+                        "",
+                        "Reply again with just the post's URL (or its numeric ID) "
+                        "and I'll attach the audio there.",
+                        "",
+                        "— TTS Studio (automated message)",
+                    ]),
+                    thread_id=info.get("wp_thread_id"))
+            except Exception as e:
+                log(f"Couldn't ask again about \"{name}\": {e}", "warn")
+        return True
+
     def fetch_chapters_shortcode(self, project_id, doc_name=None):
         """Ask the app for the project's chapters shortcode (the JSON array of
         {title, start} the UI copies). Returns the JSON string, or None if
@@ -713,7 +830,7 @@ class Watcher:
                 raise RuntimeError(
                     f"Gmail OAuth token not found: {token_path} — run "
                     f"gmail_auth.py once to authorize sending (see DOC_WATCHER.md).")
-            creds = UserCredentials.from_authorized_user_file(token_path, GMAIL_SEND_SCOPE)
+            creds = UserCredentials.from_authorized_user_file(token_path, GMAIL_SCOPES)
             self._gmail_creds = creds
         if not creds.valid:
             creds.refresh(GoogleAuthRequest())
@@ -801,6 +918,47 @@ class Watcher:
         )
         r.raise_for_status()
         return r.json()
+
+
+def _message_text(payload):
+    """Plain-text body of a Gmail message, minus the quoted reply.
+
+    Phones quote the whole original underneath the reply, which would hand us
+    back the links from our own question — so everything from the quote marker
+    down is dropped."""
+    text = _walk_for_text(payload) or ""
+    lines = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith(">"):
+            break
+        if re.match(r"^On .+ wrote:$", stripped) or stripped in ("--", "___"):
+            break
+        if stripped.startswith("From:") and lines:
+            break  # forwarded-header style quoting
+        lines.append(line)
+    return "\n".join(lines).strip()
+
+
+def _walk_for_text(part):
+    if part.get("mimeType") == "text/plain":
+        data = part.get("body", {}).get("data")
+        if data:
+            return base64.urlsafe_b64decode(data + "===").decode("utf-8", "replace")
+    for child in part.get("parts", []) or []:
+        found = _walk_for_text(child)
+        if found:
+            return found
+    return None
+
+
+def _first_post_reference(body):
+    """The first URL in the reply, or a bare post id if that's all they sent."""
+    match = re.search(r"https?://[^\s<>\"\')]+", body or "")
+    if match:
+        return match.group(0).rstrip(".,;:)]}>")
+    bare = (body or "").strip()
+    return bare if re.fullmatch(r"\d{1,9}", bare) else None
 
 
 def main():

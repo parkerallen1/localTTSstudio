@@ -20,6 +20,14 @@ Google Cloud setup (same project as the Drive service account):
   3. APIs & Services -> Credentials -> Create Credentials -> OAuth client ID
        -> Application type: "Desktop app". Download the client-secret JSON.
 
+If you want doc_watcher's WordPress hand-off to read your reply saying which
+post an audio file belongs to, add --with-replies. That asks for
+gmail.readonly, which Google classes as a RESTRICTED scope: consent shows a
+sterner warning than gmail.send does, and an unverified app is capped at 100
+users (fine for one person, but it is the part most likely to give you
+trouble). Without it everything else still works — you just attach those
+stragglers to their posts by hand.
+
 Then:
     pip install google-auth-oauthlib
     python gmail_auth.py --client-secrets /path/to/client_secret.json
@@ -33,7 +41,10 @@ import os
 import sys
 
 DEFAULT_TOKEN = os.path.expanduser("~/.qwen_tts_studio/gmail_token.json")
-SCOPES = ["https://www.googleapis.com/auth/gmail.send"]
+SEND_SCOPE = "https://www.googleapis.com/auth/gmail.send"
+# Only needed for doc_watcher's WordPress hand-off, where it reads the replies
+# to its own "which post is this?" threads. Ask for it with --with-replies.
+READ_SCOPE = "https://www.googleapis.com/auth/gmail.readonly"
 
 
 def main():
@@ -42,7 +53,11 @@ def main():
                     help="path to the OAuth 'Desktop app' client-secret JSON from Google Cloud Console")
     ap.add_argument("--token", default=DEFAULT_TOKEN,
                     help=f"where to write the resulting token (default {DEFAULT_TOKEN})")
+    ap.add_argument("--with-replies", action="store_true",
+                    help="also request read access, so the WordPress hand-off can "
+                         "read your reply telling it which post the audio belongs to")
     args = ap.parse_args()
+    scopes = [SEND_SCOPE] + ([READ_SCOPE] if args.with_replies else [])
 
     if not os.path.exists(args.client_secrets):
         sys.exit(f"client-secrets file not found: {args.client_secrets}")
@@ -52,7 +67,7 @@ def main():
     except ImportError:
         sys.exit("Missing dependency: pip install google-auth-oauthlib")
 
-    flow = InstalledAppFlow.from_client_secrets_file(args.client_secrets, SCOPES)
+    flow = InstalledAppFlow.from_client_secrets_file(args.client_secrets, scopes)
     # Desktop-app clients allow loopback redirects, so a local server on an
     # ephemeral port works without registering a redirect URI. Must run on a
     # machine with a browser; copy the token to the watcher host afterward.
