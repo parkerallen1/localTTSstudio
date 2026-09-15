@@ -1,0 +1,154 @@
+"""Smoke test for the Google Doc -> WordPress hand-off state machine.
+
+Runs doc_watcher's completion pass against a fake TTS app and a fake
+WordPress publisher, so it exercises the branching (matched / no match /
+answered / failing) without touching Drive, Gmail, or the live site.
+
+    ./venv/bin/python test_wp_pipeline.py
+"""
+import sys
+import types
+
+import doc_watcher
+from doc_watcher import Watcher
+from wp_publisher import WordPressPublisher, WordPressError
+
+PASS, FAIL = [], []
+
+
+def check(label, got, want):
+    (PASS if got == want else FAIL).append(label)
+    mark = "ok  " if got == want else "FAIL"
+    print(f"[{mark}] {label}" + ("" if got == want else f"\n        got {got!r}, want {want!r}"))
+
+
+class FakePublisher:
+    """Stands in for WordPressPublisher: real matching, fake SSH."""
+
+    def __init__(self, posts, fail_publish=False):
+        self.posts = posts
+        self.fail_publish = fail_publish
+        self.published = []
+
+    def match_title(self, title, limit=3):
+        return WordPressPublisher.match_title(
+            types.SimpleNamespace(), title, limit=limit, posts=self.posts)
+
+    def publish(self, post_id, m4a_path, extra_fields=None, media_title=None):
+        if self.fail_publish:
+            raise WordPressError("ACF is not active on this install")
+        self.published.append((post_id, extra_fields, open(m4a_path, "rb").read()))
+        return {
+            "ok": True, "post_title": "Faith Over Fear", "post_status": "publish",
+            "permalink": f"https://example.com/?p={post_id}",
+            "edit_link": f"https://example.com/wp-admin/post.php?post={post_id}",
+            "applied": {"audio_file": {"before": None, "after": 999}},
+        }
+
+
+def make_watcher(posts, fail_publish=False, state=None):
+    w = Watcher.__new__(Watcher)
+    w.app_url = "http://127.0.0.1:8001"
+    w.app_token = ""
+    w.email = {"enabled": False}
+    w.wordpress = {"enabled": True, "notify": "me@example.com",
+                   "site_url": "https://example.com", "audio_field": "audio_file"}
+    w._wp_pub = FakePublisher(posts, fail_publish=fail_publish)
+    w.state = state or {}
+    w.sent = []
+    w.send_mail = lambda to, subject, body, **kw: (
+        w.sent.append((to, subject, body)) or {"threadId": "thread-1"})
+    w.export_m4a = lambda project_id, file_ids: b"FAKE-M4A-BYTES"
+    w.fetch_chapters_shortcode = lambda project_id, name=None: '[{"title":"One","start":0}]'
+    return w
+
+
+def fake_project_get(url, **kwargs):
+    r = types.SimpleNamespace()
+    r.status_code = 200
+    r.raise_for_status = lambda: None
+    r.json = lambda: {
+        "import_status": "done",
+        "paragraphs": [{"id": "p1", "hasAudio": True, "activeTake": 1}],
+    }
+    return r
+
+
+doc_watcher.requests = types.SimpleNamespace(
+    get=fake_project_get, RequestException=Exception)
+
+POSTS = [
+    {"ID": 11, "post_title": "Faith Over Fear", "post_status": "publish"},
+    {"ID": 12, "post_title": "Faith Over Fear, Again", "post_status": "draft"},
+    {"ID": 13, "post_title": "Totally Different", "post_status": "publish"},
+]
+
+
+def entry(name, **extra):
+    base = {"name": name, "project_id": "proj-1", "email_status": "skipped",
+            "wp_status": "pending", "wp_attempts": 0, "doc_url": "https://docs/x"}
+    base.update(extra)
+    return base
+
+
+print("\n--- exact title match publishes on its own ---")
+w = make_watcher(POSTS)
+info = entry("Faith Over Fear")          # doc title == post title
+w._finish_doc(info)
+check("status", info["wp_status"], "published")
+check("post id", info["wp_post_id"], 11)
+check("audio uploaded", w._wp_pub.published[0][2], b"FAKE-M4A-BYTES")
+check("chapters field sent", w._wp_pub.published[0][1], {})
+check("confirmation emailed", len(w.sent), 1)
+
+print("\n--- smart quotes and dashes still match ---")
+w = make_watcher([{"ID": 21, "post_title": "Don't Give Up - Part 2", "post_status": "publish"}])
+info = entry("Don’t Give Up — Part 2")
+w._finish_doc(info)
+check("status", info["wp_status"], "published")
+
+print("\n--- extra_fields templates get filled in ---")
+w = make_watcher(POSTS)
+w.wordpress["extra_fields"] = {"chapters": "{chapters}", "source_doc": "{doc_url}"}
+info = entry("Faith Over Fear")
+w._finish_doc(info)
+check("templated fields", w._wp_pub.published[0][1],
+      {"chapters": '[{"title":"One","start":0}]', "source_doc": "https://docs/x"})
+
+print("\n--- ambiguous title asks a human, then waits ---")
+w = make_watcher(POSTS)
+info = entry("Faith Over")                # close to two posts, exactly none
+w._finish_doc(info)
+check("status", info["wp_status"], "awaiting_reply")
+check("thread recorded", info["wp_thread_id"], "thread-1")
+check("candidates offered", [c["id"] for c in info["wp_candidates"]], [11, 12])
+check("asked once", len(w.sent), 1)
+check("subject", w.sent[0][1], 'Which post is "Faith Over"?')
+check("links are tappable", "https://example.com/?p=11" in w.sent[0][2], True)
+w._finish_doc(info)                       # next poll, still no reply
+check("no repeat ask", len(w.sent), 1)
+check("no audio re-encoded", w._wp_pub.published, [])
+
+print("\n--- the answer arrives and it publishes there ---")
+info["wp_post_id"] = 13                   # what the reply handler sets
+w._finish_doc(info)
+check("status", info["wp_status"], "published")
+check("published to the named post", w._wp_pub.published[0][0], 13)
+
+print("\n--- a broken install retries, then gives up loudly ---")
+w = make_watcher(POSTS, fail_publish=True)
+info = entry("Faith Over Fear")
+for _ in range(doc_watcher.MAX_WP_ATTEMPTS):
+    w._finish_doc(info)
+check("status", info["wp_status"], "failed")
+check("attempts", info["wp_attempts"], doc_watcher.MAX_WP_ATTEMPTS)
+check("failure emailed", w.sent[-1][1], "Couldn't attach audio: Faith Over Fear")
+
+print("\n--- docs imported before WordPress was enabled are left alone ---")
+w = make_watcher(POSTS)
+info = {"name": "Old Doc", "project_id": "proj-0", "email_status": "sent"}
+check("untouched", w._finish_doc(info), False)
+check("no wp_status invented", info.get("wp_status"), None)
+
+print(f"\n{len(PASS)} passed, {len(FAIL)} failed")
+sys.exit(1 if FAIL else 0)

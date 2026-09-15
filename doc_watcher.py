@@ -60,11 +60,14 @@ import json
 import os
 import re
 import sys
+import tempfile
 import time
 from datetime import datetime
 from email.message import EmailMessage
 
 import requests
+
+from wp_publisher import WordPressPublisher, WordPressError
 
 try:
     from google.oauth2 import service_account
@@ -131,6 +134,9 @@ DEFAULT_GMAIL_TOKEN = os.path.join(DEFAULT_DIR, "gmail_token.json")
 # Give up emailing a doc after this many failed export/send attempts (one per
 # poll) so a permanently-broken recipient/SMTP config doesn't retry forever.
 MAX_EMAIL_ATTEMPTS = 5
+# Same idea for the WordPress hand-off: a bad SSH key or a missing ACF field
+# shouldn't retry against the live site forever.
+MAX_WP_ATTEMPTS = 5
 # Gmail rejects messages over 25 MB; stay under it and fall back to a link-only
 # email when the audio is bigger.
 MAX_ATTACH_BYTES = 24 * 1024 * 1024
@@ -167,6 +173,8 @@ class Watcher:
         self.folder_id = (config.get("folder_id") or "").strip()
         self.settings = config.get("settings") or None
         self.email = config.get("email") or {}
+        self.wordpress = config.get("wordpress") or {}
+        self._wp_pub = None
         self.state = load_json(STATE_FILE, {})
 
     def _google_headers(self):
@@ -298,6 +306,10 @@ class Watcher:
                 # "skipped" -> emailing off, or we couldn't identify the sharer.
                 "email_status": "pending" if (email_on and sharer_email) else "skipped",
                 "email_attempts": 0,
+                # "pending" -> look for the matching post once audio is done.
+                # "awaiting_reply" -> we asked which post; waiting on a human.
+                "wp_status": "pending" if self.wordpress.get("enabled") else "skipped",
+                "wp_attempts": 0,
             }
             save_state(self.state)
             log(f"Imported \"{doc['name']}\" — project {result.get('id')}, "
@@ -308,8 +320,8 @@ class Watcher:
                 log(f"Emailing on, but couldn't determine who shared \"{doc['name']}\" "
                     f"— no completion email will be sent.", "warn")
 
-        if self.email.get("enabled"):
-            self.email_completed_docs()
+        if self.email.get("enabled") or self.wordpress.get("enabled"):
+            self.finish_completed_docs()
         return len(docs)
 
     def _pick_recipient(self, doc):
@@ -325,105 +337,340 @@ class Watcher:
 
     # ---- Completion emails -------------------------------------------------
 
-    def email_completed_docs(self):
-        """For each imported doc whose audio has finished generating, export the
-        merged M4A and email it back to the person who shared the doc.
+    def finish_completed_docs(self):
+        """Post-generation work for every imported doc whose audio is ready:
+        email it back to whoever shared the doc, and/or attach it to the
+        matching WordPress post.
 
-        Runs every poll. Only touches state entries flagged email_status ==
-        "pending"; a send failure leaves the entry pending (retried next poll)
-        until MAX_EMAIL_ATTEMPTS, then it's marked "failed"."""
+        Runs every poll. A doc is left alone once both email_status and
+        wp_status are terminal; a failure leaves the relevant one pending and
+        it is retried next poll until the attempt cap."""
         changed = False
-        for doc_id, info in self.state.items():
-            if info.get("email_status") != "pending":
-                continue
-            project_id = info.get("project_id")
-            to_email = info.get("sharer_email")
-            if not project_id or not to_email:
-                info["email_status"] = "skipped"
-                changed = True
-                continue
-
+        for info in self.state.values():
             try:
-                r = requests.get(f"{self.app_url}/api/projects/{project_id}",
-                                 headers=self._app_headers(), timeout=30)
-                if r.status_code == 404:
-                    log(f"Project for \"{info.get('name')}\" is gone — not emailing.", "warn")
-                    info["email_status"] = "skipped"
-                    changed = True
-                    continue
-                r.raise_for_status()
-                project = r.json()
-            except requests.RequestException as e:
-                log(f"Couldn't check status of \"{info.get('name')}\" ({e}) — will retry.", "warn")
-                continue
-
-            status = str(project.get("import_status") or "")
-            if not status.startswith("done"):
-                continue  # still generating (or pending) — check again next poll
-
-            # Build the ordered list of stored audio ids (active take per paragraph).
-            file_ids = [
-                f"{p['id']}-t{p['activeTake']}"
-                for p in project.get("paragraphs", [])
-                if p.get("hasAudio") and p.get("activeTake")
-            ]
-            had_failures = status != "done"  # "done (N of M failed)"
-
-            m4a_bytes = None
-            try:
-                if file_ids:
-                    m4a_bytes = self.export_m4a(project_id, file_ids)
-                    if len(m4a_bytes) > MAX_ATTACH_BYTES:
-                        log(f"\"{info.get('name')}\" audio is "
-                            f"{len(m4a_bytes) // (1024 * 1024)} MB — too big to attach; "
-                            f"sending a link-only email.", "warn")
-                        m4a_bytes = None
-            except requests.RequestException as e:
-                changed |= self._note_email_attempt(info, f"export failed: {e}")
-                continue
-
-            # Chapter markers for the finished audio (same JSON the app's
-            # "Copy Chapters Shortcode" button produces). Best-effort: a
-            # failure here shouldn't hold back the audio.
-            chapters_shortcode = None
-            if file_ids:
-                chapters_shortcode = self.fetch_chapters_shortcode(project_id, info.get("name"))
-
-            try:
-                self.send_completion_email(
-                    to_email=to_email,
-                    to_name=info.get("sharer_name"),
-                    doc_name=info.get("name") or "your document",
-                    m4a_bytes=m4a_bytes,
-                    had_failures=had_failures,
-                    have_audio=bool(file_ids),
-                    chapters_shortcode=chapters_shortcode,
-                )
+                changed |= self._finish_doc(info)
             except Exception as e:
-                changed |= self._note_email_attempt(info, f"send failed: {e}")
-                continue
-
-            info["email_status"] = "sent"
-            info["emailed_at"] = datetime.now().astimezone().isoformat()
-            changed = True
-            log(f"Emailed finished audio for \"{info.get('name')}\" to {to_email}.", "ok")
-
+                log(f"Unexpected error finishing \"{info.get('name')}\": {e}", "error")
         if changed:
             save_state(self.state)
 
-    def _note_email_attempt(self, info, reason):
-        """Record a failed export/send attempt; give up after the cap. Returns
+    def _finish_doc(self, info):
+        """One doc's post-generation work. Returns True if state changed."""
+        changed = False
+        need_email = info.get("email_status") == "pending"
+        need_wp = info.get("wp_status") in ("pending", "awaiting_reply")
+        if not (need_email or need_wp):
+            return False
+
+        project_id = info.get("project_id")
+        if not project_id:
+            info["email_status"] = "skipped"
+            info["wp_status"] = "skipped"
+            return True
+        if need_email and not info.get("sharer_email"):
+            info["email_status"] = "skipped"
+            need_email, changed = False, True
+            if not need_wp:
+                return changed
+
+        try:
+            r = requests.get(f"{self.app_url}/api/projects/{project_id}",
+                             headers=self._app_headers(), timeout=30)
+            if r.status_code == 404:
+                log(f"Project for \"{info.get('name')}\" is gone — nothing to deliver.", "warn")
+                if need_email:
+                    info["email_status"] = "skipped"
+                if need_wp:
+                    info["wp_status"] = "skipped"
+                return True
+            r.raise_for_status()
+            project = r.json()
+        except requests.RequestException as e:
+            log(f"Couldn't check status of \"{info.get('name')}\" ({e}) — will retry.", "warn")
+            return changed
+
+        status = str(project.get("import_status") or "")
+        if not status.startswith("done"):
+            return changed  # still generating (or pending) — check again next poll
+
+        # Ordered list of stored audio ids (active take per paragraph).
+        file_ids = [
+            f"{p['id']}-t{p['activeTake']}"
+            for p in project.get("paragraphs", [])
+            if p.get("hasAudio") and p.get("activeTake")
+        ]
+        had_failures = status != "done"  # "done (N of M failed)"
+
+        # A doc parked on "which post is this?" doesn't need the audio
+        # re-encoded on every poll — only once there's somewhere to put it.
+        wp_wants_audio = need_wp and (info.get("wp_status") == "pending"
+                                      or info.get("wp_post_id"))
+        m4a_bytes = None
+        if file_ids and (need_email or wp_wants_audio):
+            try:
+                m4a_bytes = self.export_m4a(project_id, file_ids)
+            except requests.RequestException as e:
+                if need_email:
+                    changed |= self._note_attempt(info, "email", f"export failed: {e}")
+                if need_wp:
+                    changed |= self._note_attempt(info, "wp", f"export failed: {e}")
+                return changed
+
+        if need_email:
+            changed |= self._email_doc(info, project_id, m4a_bytes, file_ids, had_failures)
+        if need_wp:
+            changed |= self._wordpress_doc(info, project_id, m4a_bytes)
+        return changed
+
+    def _email_doc(self, info, project_id, m4a_bytes, file_ids, had_failures):
+        """Send the finished audio back to whoever shared the doc."""
+        to_email = info.get("sharer_email")
+        attach = m4a_bytes
+        if attach and len(attach) > MAX_ATTACH_BYTES:
+            log(f"\"{info.get('name')}\" audio is {len(attach) // (1024 * 1024)} MB "
+                f"— too big to attach; sending a link-only email.", "warn")
+            attach = None
+
+        # Chapter markers for the finished audio (the same JSON the app's
+        # "Copy Chapters Shortcode" button produces). Best-effort: a failure
+        # here shouldn't hold back the audio.
+        chapters_shortcode = None
+        if file_ids:
+            chapters_shortcode = self.fetch_chapters_shortcode(project_id, info.get("name"))
+
+        try:
+            self.send_completion_email(
+                to_email=to_email,
+                to_name=info.get("sharer_name"),
+                doc_name=info.get("name") or "your document",
+                m4a_bytes=attach,
+                had_failures=had_failures,
+                have_audio=bool(file_ids),
+                chapters_shortcode=chapters_shortcode,
+            )
+        except Exception as e:
+            return self._note_attempt(info, "email", f"send failed: {e}")
+
+        info["email_status"] = "sent"
+        info["emailed_at"] = datetime.now().astimezone().isoformat()
+        log(f"Emailed finished audio for \"{info.get('name')}\" to {to_email}.", "ok")
+        return True
+
+    def _note_attempt(self, info, kind, reason):
+        """Record a failed delivery attempt; give up after the cap. Returns
         True (state changed) so callers can OR it into their changed flag."""
-        attempts = int(info.get("email_attempts", 0)) + 1
-        info["email_attempts"] = attempts
-        if attempts >= MAX_EMAIL_ATTEMPTS:
-            info["email_status"] = "failed"
-            log(f"Giving up emailing \"{info.get('name')}\" after {attempts} "
+        cap = MAX_EMAIL_ATTEMPTS if kind == "email" else MAX_WP_ATTEMPTS
+        attempts = int(info.get(f"{kind}_attempts", 0)) + 1
+        info[f"{kind}_attempts"] = attempts
+        label = "emailing" if kind == "email" else "publishing"
+        if attempts >= cap:
+            info[f"{kind}_status"] = "failed"
+            log(f"Giving up {label} \"{info.get('name')}\" after {attempts} "
                 f"attempts — {reason}", "error")
+            self._notify_failure(info, kind, reason)
         else:
-            log(f"Email attempt {attempts}/{MAX_EMAIL_ATTEMPTS} for "
+            log(f"{label.capitalize()} attempt {attempts}/{cap} for "
                 f"\"{info.get('name')}\" — {reason} — will retry.", "warn")
         return True
+
+    # ---- WordPress hand-off ------------------------------------------------
+
+    def _wp_publisher(self):
+        if self._wp_pub is None:
+            self._wp_pub = WordPressPublisher(self.wordpress, logger=log)
+        return self._wp_pub
+
+    def _wordpress_doc(self, info, project_id, m4a_bytes):
+        """Attach this doc's finished audio to its WordPress post.
+
+        Three outcomes: "published" (exactly one post title matched, or a
+        human has since told us which post it is), "awaiting_reply" (we
+        emailed to ask), or a retry/give-up via _note_attempt."""
+        name = info.get("name") or "document"
+        try:
+            pub = self._wp_publisher()
+        except WordPressError as e:
+            return self._note_attempt(info, "wp", f"config problem: {e}")
+
+        post_id = info.get("wp_post_id")
+        if not post_id:
+            if info.get("wp_status") == "awaiting_reply":
+                return False  # still waiting on a human to name the post
+            try:
+                post, candidates = pub.match_title(name)
+            except WordPressError as e:
+                return self._note_attempt(info, "wp", f"title lookup failed: {e}")
+            if not post:
+                return self._ask_which_post(info, candidates)
+            post_id = post["ID"]
+            info["wp_post_id"] = post_id
+            info["wp_post_title"] = post.get("post_title")
+            log(f"\"{name}\" matched post {post_id} (\"{post.get('post_title')}\").")
+
+        if not m4a_bytes:
+            return self._note_attempt(info, "wp", "no audio was generated to attach")
+
+        tmp = None
+        try:
+            fields = self._wp_extra_fields(info, project_id)
+            fd, tmp = tempfile.mkstemp(prefix="tts-wp-", suffix=".m4a")
+            with os.fdopen(fd, "wb") as f:
+                f.write(m4a_bytes)
+            result = pub.publish(post_id, tmp, extra_fields=fields, media_title=name)
+        except (WordPressError, OSError) as e:
+            return self._note_attempt(info, "wp", f"publish failed: {e}")
+        finally:
+            if tmp and os.path.exists(tmp):
+                os.unlink(tmp)
+
+        info["wp_status"] = "published"
+        info["wp_permalink"] = result.get("permalink")
+        info["wp_published_at"] = datetime.now().astimezone().isoformat()
+        log(f"Attached audio for \"{name}\" to post {post_id} — "
+            f"{result.get('permalink')}", "ok")
+        self._notify_published(info, result)
+        return True
+
+    def _wp_extra_fields(self, info, project_id):
+        """Build the non-audio ACF values from the config's templates.
+
+        wordpress.extra_fields maps an ACF field name (or field key) to a
+        string that may reference {chapters}, {doc_name} or {doc_url}."""
+        templates = self.wordpress.get("extra_fields") or {}
+        if not templates:
+            return {}
+        values = {
+            "doc_name": info.get("name") or "",
+            "doc_url": info.get("doc_url") or "",
+            "chapters": "",
+        }
+        # Only pay for the chapter scan if a field actually asks for it.
+        if any("{chapters}" in str(t) for t in templates.values()):
+            values["chapters"] = self.fetch_chapters_shortcode(
+                project_id, info.get("name")) or ""
+        fields = {}
+        for field, template in templates.items():
+            try:
+                fields[field] = str(template).format(**values)
+            except (KeyError, IndexError) as e:
+                log(f"wordpress.extra_fields[\"{field}\"] references {e} — "
+                    f"writing the template literally.", "warn")
+                fields[field] = str(template)
+        return fields
+
+    def _wp_notify_address(self, info):
+        return (self.wordpress.get("notify") or info.get("sharer_email") or "").strip()
+
+    def _post_links(self, post_id):
+        """View and edit links for a post, built from the site URL so they work
+        without asking wp-cli for a permalink."""
+        site = (self.wordpress.get("site_url") or "").rstrip("/")
+        if not site:
+            return None, None
+        return (f"{site}/?p={post_id}",
+                f"{site}/wp-admin/post.php?post={post_id}&action=edit")
+
+    def _ask_which_post(self, info, candidates):
+        """No single post title matched — email and ask which post this is.
+
+        The reply is picked up by check_replies() on a later poll."""
+        name = info.get("name") or "document"
+        to_email = self._wp_notify_address(info)
+        if not to_email:
+            log(f"No post matched \"{name}\" and there's no wordpress.notify "
+                f"address to ask — leaving it unpublished.", "warn")
+            info["wp_status"] = "skipped"
+            return True
+
+        lines = [
+            f"The audio for \"{name}\" is ready, but no WordPress post has that "
+            f"exact title, so I haven't attached it to anything yet.",
+            "",
+            "Reply to this email with the post's URL and I'll attach it there.",
+        ]
+        if candidates:
+            lines += ["", "Closest matches — if it's one of these, reply with its link:"]
+            for post in candidates:
+                view, _ = self._post_links(post["ID"])
+                status = post.get("post_status", "")
+                suffix = f" [{status}]" if status and status != "publish" else ""
+                lines.append(f"  • {post.get('post_title')}{suffix}")
+                lines.append(f"    {view or 'post id ' + str(post['ID'])}")
+        else:
+            lines += ["", "Nothing on the site came close to that title."]
+        if info.get("doc_url"):
+            lines += ["", f"The doc: {info['doc_url']}"]
+        lines += ["", "— TTS Studio (automated message)"]
+
+        try:
+            sent = self.send_mail(to_email, f"Which post is \"{name}\"?", "\n".join(lines))
+        except Exception as e:
+            return self._note_attempt(info, "wp", f"couldn't ask which post: {e}")
+
+        info["wp_status"] = "awaiting_reply"
+        info["wp_thread_id"] = sent.get("threadId")
+        info["wp_asked_at"] = datetime.now().astimezone().isoformat()
+        info["wp_candidates"] = [
+            {"id": p["ID"], "title": p.get("post_title")} for p in candidates
+        ]
+        log(f"No post matched \"{name}\" — asked {to_email} which post it is.", "warn")
+        return True
+
+    def _notify_published(self, info, result):
+        """Tell the operator the audio landed, with links to check it."""
+        to_email = self._wp_notify_address(info)
+        if not to_email:
+            return
+        name = info.get("name") or "document"
+        view = result.get("permalink") or ""
+        edit = result.get("edit_link") or ""
+        lines = [
+            f"The audio for \"{name}\" is now attached to "
+            f"\"{result.get('post_title')}\".",
+            "",
+            f"  View: {view}",
+            f"  Edit: {edit}",
+            "",
+            "Fields set:",
+        ]
+        for field, change in (result.get("applied") or {}).items():
+            before = change.get("before")
+            was = "was empty" if before in (None, "", False) else f"was {before!r}"
+            lines.append(f"  • {field} -> {change.get('after')!r} ({was})")
+        if result.get("post_status") != "publish":
+            lines += ["", f"Heads up: that post is still {result.get('post_status')} "
+                          f"— I didn't change its status."]
+        lines += ["", "— TTS Studio (automated message)"]
+        try:
+            self.send_mail(to_email, f"Audio attached: {result.get('post_title')}",
+                           "\n".join(lines))
+        except Exception as e:
+            log(f"Published \"{name}\" but couldn't send the confirmation email: {e}", "warn")
+
+    def _notify_failure(self, info, kind, reason):
+        """Something gave up for good — say so, rather than only logging it."""
+        if kind != "wp":
+            return  # if email is what's broken, emailing about it won't help
+        to_email = self._wp_notify_address(info)
+        if not to_email:
+            return
+        name = info.get("name") or "document"
+        try:
+            self.send_mail(
+                to_email,
+                f"Couldn't attach audio: {name}",
+                "\n".join([
+                    f"I gave up attaching the audio for \"{name}\" to WordPress "
+                    f"after {MAX_WP_ATTEMPTS} attempts.",
+                    "",
+                    f"Last error: {reason}",
+                    "",
+                    "The audio itself is fine — open TTS Studio and export it by hand.",
+                    "",
+                    "— TTS Studio (automated message)",
+                ]))
+        except Exception as e:
+            log(f"Couldn't send the failure notice for \"{name}\": {e}", "warn")
 
     def fetch_chapters_shortcode(self, project_id, doc_name=None):
         """Ask the app for the project's chapters shortcode (the JSON array of
@@ -476,7 +723,6 @@ class Watcher:
                               had_failures=False, have_audio=True,
                               chapters_shortcode=None):
         cfg = self.email
-        from_addr = (cfg.get("from_address") or "").strip()
         edit_url = (cfg.get("edit_url") or self.app_url).rstrip("/")
         first = (to_name or "").split(" ")[0].strip()
         greeting = f"Hi {first}," if first else "Hi,"
@@ -510,35 +756,51 @@ class Watcher:
             "— TTS Studio (automated message)",
         ]
 
+        attachment = None
+        if m4a_bytes:
+            fname = re.sub(r'[^\w\-. ]', "_", doc_name).strip() or "audio"
+            attachment = (m4a_bytes, f"{fname}.m4a")
+        return self.send_mail(to_email, f"Your audio is ready: {doc_name}",
+                              "\n".join(lines), attachment=attachment)
+
+    def send_mail(self, to_email, subject, body, attachment=None, thread_id=None):
+        """Send one plain-text email through the Gmail API.
+
+        Returns the API response — its "threadId" is what lets us watch for a
+        reply later, which is how the "which post?" hand-off works."""
+        cfg = self.email
         msg = EmailMessage()
+        from_addr = (cfg.get("from_address") or "").strip()
         from_name = cfg.get("from_name") or "TTS Studio"
         if from_addr:
             msg["From"] = f"{from_name} <{from_addr}>" if from_name else from_addr
         msg["To"] = to_email
         # Gmail delivers to a Bcc header and strips it from the copy other
-        # recipients receive, so the oversight copy stays hidden.
+        # recipients receive, so the oversight copy stays hidden. Skip it when
+        # it would just send the same person the message twice.
         bcc = (cfg.get("bcc") or "").strip()
-        if bcc:
+        if bcc and bcc.lower() != to_email.lower():
             msg["Bcc"] = bcc
         if cfg.get("reply_to"):
             msg["Reply-To"] = cfg["reply_to"]
-        msg["Subject"] = f"Your audio is ready: {doc_name}"
-        msg.set_content("\n".join(lines))
-
-        if m4a_bytes:
-            fname = re.sub(r'[^\w\-. ]', "_", doc_name).strip() or "audio"
-            msg.add_attachment(m4a_bytes, maintype="audio", subtype="mp4",
-                               filename=f"{fname}.m4a")
+        msg["Subject"] = subject
+        msg.set_content(body)
+        if attachment:
+            data, filename = attachment
+            msg.add_attachment(data, maintype="audio", subtype="mp4", filename=filename)
 
         creds = self._gmail_credentials()
-        raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
+        payload = {"raw": base64.urlsafe_b64encode(msg.as_bytes()).decode()}
+        if thread_id:
+            payload["threadId"] = thread_id
         r = requests.post(
             GMAIL_SEND_URL,
             headers={"Authorization": f"Bearer {creds.token}"},
-            json={"raw": raw},
+            json=payload,
             timeout=120,
         )
         r.raise_for_status()
+        return r.json()
 
 
 def main():
