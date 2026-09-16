@@ -157,8 +157,21 @@ class WordPressPublisher:
         return argv + [self.host]
 
     def _run(self, remote_cmd, stdin_bytes=None, timeout=None):
+        """Run one command on the install.
+
+        The command is base64-wrapped rather than sent as a plain string.
+        WP Engine's SSH gateway re-parses what it receives and strips a level
+        of quoting, which turns any PHP snippet into a bash syntax error
+        (`syntax error near unexpected token '('`). Base64 contains nothing a
+        shell will touch, so it arrives intact. It's decoded to a temp script
+        and run from there rather than piped into `bash`, so the script's
+        stdin is still ours — that's what carries the audio upload and the
+        PHP for `wp eval-file -`."""
+        payload = base64.b64encode(remote_cmd.encode()).decode()
+        wrapper = (f"S=/tmp/tts-cmd-$$.sh; echo {payload} | base64 -d > $S; "
+                   f"bash $S; R=$?; rm -f $S; exit $R")
         proc = subprocess.run(
-            self._ssh_argv() + [remote_cmd],
+            self._ssh_argv() + [wrapper],
             input=stdin_bytes if stdin_bytes is not None else b"",
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             timeout=timeout or self.timeout,
@@ -227,9 +240,9 @@ class WordPressPublisher:
             "--post_type=" + ",".join(self.post_types),
             "--post_status=any",
             "--posts_per_page=-1",
-            "--fields=ID,post_title,post_status,post_date",
+            "--fields=ID,post_title,post_status",
             "--format=json",
-        ], timeout=180)
+        ], timeout=600)
         start = out.find("[")
         if start < 0:
             raise WordPressError(f"could not read the post list: {out.strip()[:300]}")
