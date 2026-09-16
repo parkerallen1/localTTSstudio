@@ -261,24 +261,44 @@ ssh install@install.ssh.wpengine.net 'cd sites/install && wp eval "var_dump(func
 If that prints `bool(false)`, ACF is not active and there is nothing to write
 into — the watcher will say so and stop rather than guess.
 
-### Finding your ACF field names
+### Check it before you enable it
+
+```bash
+python doc_watcher.py --check-wordpress --title "A Doc Title You'd Share"
+```
+
+Read-only — it writes nothing. It confirms the SSH host, that `wp_path` is
+really where WordPress lives, that ACF is loaded, and what each configured
+field actually is. With `--title` it also dry-runs the title match, so you can
+see whether a given doc would publish itself or come back to you as a question.
+
+```
+Host      install@install.ssh.wpengine.net
+wp_path   /home/wpe-user/sites/install
+wp-cli    WP-CLI 2.10.0
+ACF       loaded
+
+Fields, as they exist on post 4821:
+  devotional_narration: file  key=field_a1  label='Devotional Narration'
+  has_devotional_narration: select  key=field_b2  label='Has Devotional Narration'
+      choices: {'Yes': 'Yes', 'No': 'No'}
+  devotional_chapters: textarea  key=field_c3  label='Devotional Chapters'
+
+Fix before enabling:
+  • has_devotional_narration is set to 'yes' but its choices are ['Yes', 'No']
+    — ACF stores the choice key, so that value won't display
+```
+
+That last line is the one worth caring about. **A Select stores its choice
+key, not its label.** If the choices are `Yes`/`No` then the config has to say
+`"Yes"`; writing `"yes"` stores something the field can't display, the post
+editor shows an empty dropdown, and nothing anywhere complains. The check
+compares what you configured against the real choice list so you find that out
+now rather than after twenty devotionals.
 
 `audio_field` and the keys of `extra_fields` take either an ACF field *name* or
 a field *key* (`field_6f2a1b...`). The key is the more reliable of the two,
-since names can repeat across field groups. List what a post actually has:
-
-```bash
-ssh install@install.ssh.wpengine.net 'cd sites/install && wp eval "
-  foreach ( acf_get_field_groups( array( \"post_id\" => 123 ) ) as \$g ) {
-    echo \$g[\"title\"], \"\\n\";
-    foreach ( acf_get_fields( \$g ) as \$f ) {
-      echo \"  \", \$f[\"name\"], \"  (\", \$f[\"key\"], \")  \", \$f[\"type\"], \"\\n\";
-    }
-  }"'
-```
-
-Use `"audio_field_format": "attachment_id"` for an ACF File or Audio field
-(ACF stores the attachment ID) and `"url"` for a plain text or URL field.
+since names can repeat across field groups — the check prints both.
 
 ### Config: the `wordpress` block
 
@@ -290,14 +310,22 @@ Use `"audio_field_format": "attachment_id"` for an ACF File or Audio field
   "wp_path": "/home/wpe-user/sites/install",
   "site_url": "https://example.com",
   "post_types": ["post"],
-  "audio_field": "audio_file",
+  "audio_field": "devotional_narration",
   "audio_field_format": "attachment_id",
-  "extra_fields": { "chapters": "{chapters}" },
+  "extra_fields": {
+    "has_devotional_narration": "Yes",
+    "devotional_chapters": "{chapters}"
+  },
   "notify": "you@gmail.com",
   "flush_cache": true,
   "dry_run": false
 }
 ```
+
+That example is the Deep Spirituality layout: an ACF File field for the M4A, a
+Yes/No Select flipped on once the audio lands, and a textarea holding the
+chapters shortcode. Run `--check-wordpress` to confirm the Select's real
+choice keys before trusting `"Yes"`.
 
 | Key | What it does |
 |-----|--------------|
@@ -307,14 +335,14 @@ Use `"audio_field_format": "attachment_id"` for an ACF File or Audio field
 | `post_types` | Which types to search for a title match. |
 | `audio_field` | ACF field the audio goes into. Required. |
 | `audio_field_format` | `attachment_id` (File/Audio fields) or `url` (text fields). |
-| `extra_fields` | Other ACF fields to set. Values may use `{chapters}`, `{doc_name}`, `{doc_url}`. |
+| `extra_fields` | Other ACF fields to set. A value may be a literal (a Select's choice key) or use `{chapters}`, `{doc_name}`, `{doc_url}`. |
 | `notify` | Who gets asked "which post?" and told when it lands. Defaults to whoever shared the doc. |
 | `flush_cache` | Run `wp page-cache flush` after writing, so the public page isn't stale. |
 | `dry_run` | Match, report, and write nothing. Worth leaving on for the first few docs. |
 
-`extra_fields` is where the chapters shortcode goes if you keep it on the post:
-`{ "chapters": "{chapters}" }` writes the same JSON the app's **Copy Chapters
-Shortcode** button produces.
+`{chapters}` writes the same JSON the app's **Copy Chapters Shortcode** button
+produces. A value with no `{placeholder}` in it is written literally, which is
+how the Yes/No flag gets flipped.
 
 ### When no post matches
 
