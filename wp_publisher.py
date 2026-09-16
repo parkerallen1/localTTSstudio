@@ -76,6 +76,39 @@ if ( ! function_exists( 'update_field' ) ) {
 echo "<<<TTSJSON>>>" . wp_json_encode( $out ) . "<<<TTSEND>>>\n";
 """
 
+# Reports what the configured ACF fields actually are, so a setup can be
+# checked before a doc is trusted to it. A Select's "choices" matter most:
+# ACF stores the choice KEY, so writing "Yes" to a field whose key is "yes"
+# silently stores a value the field can't display.
+_DESCRIBE_PHP = r"""<?php
+$payload = json_decode( base64_decode( $args[0] ), true );
+$post_id = (int) $payload['post_id'];
+$out = array( 'ok' => true, 'post_id' => $post_id, 'fields' => array() );
+if ( ! function_exists( 'get_field_object' ) ) {
+    $out = array( 'ok' => false, 'error' => 'ACF is not active on this install' );
+} else {
+    foreach ( (array) $payload['selectors'] as $selector ) {
+        $field = get_field_object( $selector, $post_id );
+        if ( ! $field || empty( $field['key'] ) ) {
+            $out['fields'][ $selector ] = array( 'found' => false );
+            continue;
+        }
+        $value = isset( $field['value'] ) ? $field['value'] : null;
+        $out['fields'][ $selector ] = array(
+            'found'   => true,
+            'key'     => $field['key'],
+            'name'    => $field['name'],
+            'label'   => $field['label'],
+            'type'    => $field['type'],
+            'choices' => isset( $field['choices'] ) ? $field['choices'] : null,
+            'value'   => is_scalar( $value ) || is_null( $value ) ? $value : wp_json_encode( $value ),
+        );
+    }
+}
+echo "<<<TTSJSON>>>" . wp_json_encode( $out ) . "<<<TTSEND>>>\n";
+"""
+
+
 _SMART = {
     "‘": "'", "’": "'", "‚": "'", "‛": "'",
     "“": '"', "”": '"', "„": '"',
@@ -153,16 +186,37 @@ class WordPressPublisher:
     # ---- Checks ------------------------------------------------------------
 
     def preflight(self):
-        """Confirm the connection, wp-cli, and ACF before we rely on them."""
+        """Report on the connection, wp-cli and ACF rather than assuming them.
+
+        Raises only if the install can't be reached at all; a missing ACF comes
+        back as a flag so the caller can say which part of the setup is wrong."""
         version = self._wp(["--version"], timeout=60).strip()
         acf = self._wp(
             ["eval", 'echo function_exists("update_field") ? "yes" : "no";'],
             timeout=60).strip()
-        if "yes" not in acf:
-            raise WordPressError(
-                "ACF is not active on this install — update_field() is undefined, "
-                "so there is nothing to write the audio into.")
-        return version
+        installs = self._run("ls -d ~/sites/*/ 2>/dev/null", timeout=60).strip()
+        return {"wp_version": version, "acf": "yes" in acf, "installs": installs}
+
+    def newest_post_id(self):
+        """A post to inspect field definitions against. ACF resolves a field
+        NAME through the field groups attached to a specific post, so the
+        lookup needs one."""
+        ids = self._wp(["post", "list", "--post_type=" + ",".join(self.post_types),
+                        "--post_status=publish", "--posts_per_page=1",
+                        "--field=ID", "--format=ids"], timeout=120).split()
+        return int(ids[0]) if ids else None
+
+    def describe_fields(self, selectors, post_id):
+        """What the named ACF fields actually are on a real post."""
+        payload = base64.b64encode(json.dumps({
+            "post_id": post_id, "selectors": list(selectors),
+        }).encode()).decode()
+        out = self._wp(["eval-file", "-", payload],
+                       stdin_bytes=_DESCRIBE_PHP.encode(), timeout=120)
+        result = self._fenced_json(out)
+        if not result.get("ok"):
+            raise WordPressError(result.get("error") or "could not read the field definitions")
+        return result
 
     # ---- Matching ----------------------------------------------------------
 

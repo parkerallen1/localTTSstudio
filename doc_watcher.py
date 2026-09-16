@@ -987,15 +987,123 @@ def _first_post_reference(body):
     return bare if re.fullmatch(r"\d{1,9}", bare) else None
 
 
+
+def check_wordpress(config, title=None, post_id=None):
+    """Confirm the "wordpress" block really works, before a doc depends on it.
+
+    Checks the things that are wrong in practice: the SSH host, the wp_path
+    (wp-cli is the only thing that knows where WordPress actually lives),
+    whether ACF is loaded, and what the configured fields REALLY are — a
+    Select stores its choice key, so a field whose choices are {yes: Yes} must
+    be written "yes", not "Yes". Read-only; writes nothing."""
+    cfg = config.get("wordpress") or {}
+    if not cfg:
+        sys.exit("No \"wordpress\" block in the config — nothing to check.")
+    pub = WordPressPublisher(cfg, logger=log)
+
+    print(f"Host      {pub.host}")
+    print(f"wp_path   {pub.wp_path or '(none — running wp in the login directory)'}")
+    try:
+        info = pub.preflight()
+    except WordPressError as e:
+        print(f"\nFAILED    {e}\n")
+        print("If that's a wp_path problem, ssh in and run `ls -d ~/sites/*/` to")
+        print("see the install directories; if it's a key problem, check that the")
+        print("public half is registered on the host and the private half is")
+        print("readable here (chmod 600).")
+        return 1
+    print(f"wp-cli    {info['wp_version']}")
+    print(f"ACF       {'loaded' if info['acf'] else 'NOT LOADED — nothing to write into'}")
+    if info.get("installs"):
+        print(f"Installs  {' '.join(info['installs'].split())}")
+    if not info["acf"]:
+        return 1
+
+    if post_id is None:
+        post_id = pub.newest_post_id()
+    if not post_id:
+        print(f"\nNo {'/'.join(pub.post_types)} posts found to inspect fields against.")
+        return 1
+
+    selectors = [cfg.get("audio_field")] + list((cfg.get("extra_fields") or {}).keys())
+    selectors = [s for s in selectors if s]
+    print(f"\nFields, as they exist on post {post_id}:")
+    try:
+        described = pub.describe_fields(selectors, post_id)
+    except WordPressError as e:
+        print(f"  couldn't read them: {e}")
+        return 1
+
+    problems = []
+    wanted = dict((cfg.get("extra_fields") or {}))
+    for selector, field in described["fields"].items():
+        if not field.get("found"):
+            print(f"  {selector}: NOT FOUND on this post's field groups")
+            problems.append(f"{selector} doesn't exist (check the spelling, or "
+                            f"use its field key)")
+            continue
+        print(f"  {selector}: {field['type']}  key={field['key']}  "
+              f"label={field['label']!r}")
+        if field.get("choices"):
+            print(f"      choices: {field['choices']}")
+            value = wanted.get(selector)
+            if value and "{" not in str(value) and str(value) not in field["choices"]:
+                problems.append(
+                    f"{selector} is set to {value!r} but its choices are "
+                    f"{list(field['choices'])} — ACF stores the choice key, so "
+                    f"that value won't display")
+        if selector == cfg.get("audio_field"):
+            fmt = cfg.get("audio_field_format") or "attachment_id"
+            if field["type"] in ("file", "image", "audio") and fmt != "attachment_id":
+                problems.append(f"{selector} is a {field['type']} field — set "
+                                f"audio_field_format to \"attachment_id\"")
+            if field["type"] in ("text", "textarea", "url") and fmt != "url":
+                problems.append(f"{selector} is a {field['type']} field — set "
+                                f"audio_field_format to \"url\"")
+
+    if title:
+        print(f"\nTitle match for {title!r}:")
+        match, candidates = pub.match_title(title)
+        if match:
+            print(f"  would publish to post {match['ID']} — "
+                  f"{match['post_title']!r} [{match.get('post_status')}]")
+        elif candidates:
+            print("  no exact match; would email you these to choose from:")
+            for post in candidates:
+                print(f"    {post['ID']}  {post['post_title']!r} "
+                      f"[{post.get('post_status')}]")
+        else:
+            print("  nothing close; would email you to ask for the link")
+
+    if problems:
+        print("\nFix before enabling:")
+        for problem in problems:
+            print(f"  • {problem}")
+        return 1
+    print("\nAll good — safe to set \"enabled\": true "
+          "(leave \"dry_run\": true for the first doc).")
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser(description="Watch Google Drive for shared docs and import them into TTS Studio.")
     ap.add_argument("--config", default=DEFAULT_CONFIG, help=f"config file path (default {DEFAULT_CONFIG})")
     ap.add_argument("--once", action="store_true", help="poll a single time and exit (for cron)")
+    ap.add_argument("--check-wordpress", action="store_true",
+                    help="check the \"wordpress\" block against the live install "
+                         "(read-only: confirms wp_path, ACF and the field types) and exit")
+    ap.add_argument("--title", help="with --check-wordpress: show which post this "
+                                    "doc title would match")
+    ap.add_argument("--post", type=int, help="with --check-wordpress: inspect the fields "
+                                             "on this post id instead of the newest")
     args = ap.parse_args()
 
     config = load_json(args.config, None)
     if config is None:
         sys.exit(f"Config file not found or invalid: {args.config}\nSee the header of this script for the expected format.")
+
+    if args.check_wordpress:
+        sys.exit(check_wordpress(config, title=args.title, post_id=args.post))
 
     watcher = Watcher(config)
     poll_seconds = max(30, int(config.get("poll_seconds", 120)))
