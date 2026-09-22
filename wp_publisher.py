@@ -40,6 +40,8 @@ from datetime import datetime
 # fences its JSON and we pull it back out from between these markers.
 _JSON_OPEN = "<<<TTSJSON>>>"
 _JSON_CLOSE = "<<<TTSEND>>>"
+# Marks the attachment id in wp-cli output that may also carry notices.
+_ID_PREFIX = "TTSID:"
 
 # A normalized title this similar to the doc's is worth offering as a "did you
 # mean" candidate; below it, the post is almost certainly unrelated.
@@ -300,29 +302,47 @@ class WordPressPublisher:
     # ---- Writing -----------------------------------------------------------
 
     def upload_media(self, local_path, post_id=None, title=None):
-        """Stream the file to the server and import it into the media library.
+        """Stream the file to the install and import it into the media library.
 
-        Sent over the SSH connection rather than uploaded through WordPress, so
-        PHP's upload_max_filesize never enters into it."""
-        remote = f"/tmp/tts-{datetime.now().strftime('%Y%m%d%H%M%S')}-{os.path.basename(local_path)}"
+        The transfer and the import happen in ONE ssh connection. WP Engine's
+        gateway does not guarantee that a file written to /tmp by one
+        connection is visible to the next, so uploading and importing
+        separately can hand `wp media import` a path that no longer exists.
+        Doing both in one session also saves two wp-cli bootstraps, which are
+        ~30s each on this host.
+
+        Sent over SSH rather than uploaded through WordPress, so PHP's
+        upload_max_filesize never enters into it."""
+        remote = "/tmp/tts-upload-$$-" + os.path.basename(local_path)
+        # The path is referenced as "$F" rather than passed through _shquote:
+        # single quotes would stop $$ expanding, and the import would then be
+        # handed a filename that differs from the one just written.
+        args = ["--porcelain"]
+        if post_id:
+            args.append(f"--post_id={post_id}")
+        if title:
+            args.append(f"--title={title}")
+        prefix = f"cd {_shquote(self.wp_path)} && " if self.wp_path else ""
+        # `cat` drains stdin first, so the later lines run with stdin at EOF.
+        # pipefail keeps a wp-cli failure from being hidden by sed's success;
+        # the prefix separates the id from any notices wp prints alongside it.
+        script = (
+            f'set -o pipefail\n'
+            f'F="{remote}"\n'
+            f'cat > "$F"\n'
+            f'trap \'rm -f "$F"\' EXIT\n'
+            f'{prefix}wp media import "$F" {" ".join(_shquote(a) for a in args)} '
+            f'| sed -e "s/^/{_ID_PREFIX}/"\n'
+        )
         with open(local_path, "rb") as f:
-            self._run(f"cat > {_shquote(remote)}", stdin_bytes=f.read())
-        try:
-            args = ["media", "import", remote, "--porcelain"]
-            if post_id:
-                args.append(f"--post_id={post_id}")
-            if title:
-                args.append(f"--title={title}")
-            out = self._wp(args, timeout=self.timeout).strip().splitlines()
-            ids = [line.strip() for line in out if line.strip().isdigit()]
-            if not ids:
-                raise WordPressError(f"media import returned no attachment id: {' '.join(out)[:300]}")
-            return int(ids[-1])
-        finally:
-            try:
-                self._run(f"rm -f {_shquote(remote)}", timeout=60)
-            except WordPressError:
-                pass  # a leftover temp file is not worth failing the publish over
+            out = self._run(script, stdin_bytes=f.read())
+        ids = [line[len(_ID_PREFIX):].strip() for line in out.splitlines()
+               if line.startswith(_ID_PREFIX)]
+        ids = [i for i in ids if i.isdigit()]
+        if not ids:
+            raise WordPressError(
+                f"media import returned no attachment id: {out.strip()[:300]}")
+        return int(ids[-1])
 
     def attachment_url(self, attachment_id):
         return self._wp(["post", "get", str(attachment_id), "--field=guid"], timeout=60).strip()
