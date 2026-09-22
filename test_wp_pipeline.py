@@ -437,5 +437,20 @@ check("gave up: audio emailed as fallback", len(audio_emails(w)), 1)
 check("gave up: failure notice points at it", "on its way to me@example.com" in
       [s for s in w.sent if s[1].startswith("Couldn't attach")][0][2], True)
 
+print("\n--- WordPress emails go to whoever shared the doc ---")
+doc_watcher.requests.get = fake_project_get
+w = make_watcher(POSTS)       # notify is me@example.com
+info = entry("Faith Over", sharer_email="sharer@example.com")
+w._finish_doc(info)
+check("ask goes to the sharer", w.sent[0][0], "sharer@example.com")
+w = make_watcher(POSTS)
+info = entry("Faith Over Fear", sharer_email="sharer@example.com")
+w._finish_doc(info)
+check("confirmation goes to the sharer", w.sent[0][0], "sharer@example.com")
+w = make_watcher(POSTS)
+info = entry("Faith Over Fear")
+w._finish_doc(info)
+check("notify only when the sharer is unknown", w.sent[0][0], "me@example.com")
+
 print(f"\n{len(PASS)} passed, {len(FAIL)} failed")
 sys.exit(1 if FAIL else 0)

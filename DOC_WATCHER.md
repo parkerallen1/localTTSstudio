@@ -366,7 +366,7 @@ choice keys before trusting `"Yes"`.
 | `audio_field` | ACF field the audio goes into. Required. |
 | `audio_field_format` | `attachment_id` (File/Audio fields) or `url` (text fields). |
 | `extra_fields` | Other ACF fields to set. A value may be a literal (a Select's choice key) or use `{chapters}`, `{doc_name}`, `{doc_url}`. |
-| `notify` | Who gets asked "which post?" and told when it lands. Defaults to whoever shared the doc. |
+| `notify` | Fallback recipient. Every email — "which post?", "Audio attached", failures, the audio itself — goes to whoever shared the doc; `notify` is used only when Drive can't say who that was. |
 | `flush_cache` | Purge that one post from WP Engine's page cache after writing (`WpeCommon::purge_varnish_cache`), so the public page isn't stale. |
 | `dry_run` | Match, report, and write nothing. Worth leaving on for the first few docs. |
 

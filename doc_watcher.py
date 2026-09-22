@@ -65,7 +65,7 @@ Setup (one-time, see DOC_WATCHER.md for the full walkthrough):
           "extra_fields": {                  // {chapters} {doc_name} {doc_url}
             "chapters": "{chapters}"
           },
-          "notify": "you@gmail.com",   // who gets asked / told; defaults to
+          "notify": "you@gmail.com",   // fallback recipient; emails go to
                                        // whoever shared the doc
           "flush_cache": true,         // purge this post from WP Engine's cache
           "dry_run": false             // true = match and report, write nothing
@@ -641,7 +641,11 @@ class Watcher:
         return fields
 
     def _wp_notify_address(self, info):
-        return (self.wordpress.get("notify") or info.get("sharer_email") or "").strip()
+        """Every WordPress email — the question, the confirmation, a failure —
+        goes to whoever shared the doc, like the audio email does. The
+        wordpress.notify address is only for a doc whose sharer Drive
+        couldn't tell us."""
+        return (info.get("sharer_email") or self.wordpress.get("notify") or "").strip()
 
     def _reply_senders(self, info):
         """Addresses whose reply may name the post.
