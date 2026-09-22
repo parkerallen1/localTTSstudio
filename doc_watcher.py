@@ -164,6 +164,10 @@ def docs_json_to_markdown(document_tab):
 DEFAULT_DIR = os.path.expanduser("~/.qwen_tts_studio")
 DEFAULT_CONFIG = os.path.join(DEFAULT_DIR, "doc_watcher.json")
 STATE_FILE = os.path.join(DEFAULT_DIR, "doc_watcher_state.json")
+# One JSON line per publish that touched the live site — what went where, and
+# what it replaced. Append-only, so it survives state-file edits; the thing to
+# read when checking the pipeline isn't quietly doing damage.
+PUBLISH_LOG = os.path.join(DEFAULT_DIR, "wp_publish_log.jsonl")
 # OAuth token written by gmail_auth.py; used to send completion emails.
 DEFAULT_GMAIL_TOKEN = os.path.join(DEFAULT_DIR, "gmail_token.json")
 
@@ -613,6 +617,8 @@ class Watcher:
         if result.get("folder") not in (None, "filed", "not requested"):
             log(f"Media folder: {result['folder']} — the audio is in the library, "
                 f"just not in that folder.", "warn")
+        if not dry:
+            _append_publish_log(info, post_id, result)
         self._notify_published(info, result, dry_run=dry)
         return True
 
@@ -1050,6 +1056,31 @@ class Watcher:
         )
         r.raise_for_status()
         return r.json()
+
+
+def _append_publish_log(info, post_id, result):
+    """Record a live publish. Best-effort: the publish already happened, so a
+    full disk mustn't turn it into a retry."""
+    entry = {
+        "at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "doc": info.get("name"),
+        "doc_url": info.get("doc_url"),
+        "shared_by": info.get("sharer_email"),
+        "post_id": post_id,
+        "post_title": result.get("post_title"),
+        "post_status": result.get("post_status"),
+        "permalink": result.get("permalink"),
+        "matched_by": "reply" if info.get("wp_seen_replies") else "title",
+        "attachment_id": result.get("attachment_id"),
+        "audio_url": result.get("audio_url"),
+        "replaced": {field: change.get("before")
+                     for field, change in (result.get("applied") or {}).items()},
+    }
+    try:
+        with open(PUBLISH_LOG, "a") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except OSError as e:
+        log(f"Couldn't write the publish log ({e}).", "warn")
 
 
 def _clip(value, limit=100):

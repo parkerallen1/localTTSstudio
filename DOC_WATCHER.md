@@ -440,6 +440,19 @@ The watcher only ever reads the threads it started, and only accepts an answer
 from the address it asked or the one it sends from (compared as parsed
 addresses, not substrings).
 
+### The publish log
+
+Every live publish appends one JSON line to
+`~/.qwen_tts_studio/wp_publish_log.jsonl` on the watcher machine: the doc, who
+shared it, the post (id, title, link, status), whether it was matched by title
+or by your reply, the new attachment and its URL, and the value each field had
+before. It's append-only — the record to check that nothing is being attached
+to the wrong post, and what to restore if it was.
+
+```bash
+ssh mini 'tail -n 5 ~/.qwen_tts_studio/wp_publish_log.jsonl'
+```
+
 ### Notes
 
 - Docs imported before you enabled the `wordpress` block have no `wp_status`

@@ -75,6 +75,10 @@ def fake_project_get(url, **kwargs):
     return r
 
 
+import json as _json
+import tempfile as _tempfile
+doc_watcher.PUBLISH_LOG = _tempfile.mktemp(suffix=".jsonl")   # never the real one
+
 doc_watcher.requests = types.SimpleNamespace(
     get=fake_project_get, RequestException=Exception)
 
@@ -451,6 +455,24 @@ w = make_watcher(POSTS)
 info = entry("Faith Over Fear")
 w._finish_doc(info)
 check("notify only when the sharer is unknown", w.sent[0][0], "me@example.com")
+
+print("\n--- each live publish is logged ---")
+import os as _os
+if _os.path.exists(doc_watcher.PUBLISH_LOG):
+    _os.remove(doc_watcher.PUBLISH_LOG)
+w = make_watcher(POSTS)
+info = entry("Faith Over Fear", sharer_email="sharer@example.com")
+w._finish_doc(info)
+rows = [_json.loads(l) for l in open(doc_watcher.PUBLISH_LOG)]
+check("one row", len(rows), 1)
+check("row links the post", (rows[0]["post_id"], rows[0]["permalink"]), (11, "https://example.com/?p=11"))
+check("row keeps what it replaced", rows[0]["replaced"], {"audio_file": None})
+w = make_watcher(POSTS)
+w.wordpress["dry_run"] = True
+w._finish_doc(entry("Faith Over Fear"))
+check("dry runs aren't logged", sum(1 for _ in open(doc_watcher.PUBLISH_LOG)), 1)
+check("folder name sent to the server",
+      '"media_folder"' in open(wp_publisher.__file__).read(), True)
 
 print(f"\n{len(PASS)} passed, {len(FAIL)} failed")
 sys.exit(1 if FAIL else 0)
