@@ -422,13 +422,15 @@ class WordPressPublisher:
     # ---- Matching ----------------------------------------------------------
 
     def list_posts(self):
-        """Every non-trashed post of the configured types, as {ID, title, status}."""
+        """Every non-trashed post of the configured types, as {ID, post_title,
+        post_status, url}. `url` is the public permalink (a draft only has
+        ?p=ID); asking for it measured no slower than leaving it out."""
         out = self._wp([
             "post", "list",
             "--post_type=" + ",".join(self.post_types),
             "--post_status=any",
             "--posts_per_page=-1",
-            "--fields=ID,post_title,post_status",
+            "--fields=ID,post_title,post_status,url",
             "--format=json",
         ], timeout=600)
         start = out.find("[")

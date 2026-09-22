@@ -86,7 +86,7 @@ doc_watcher.requests = types.SimpleNamespace(
     get=fake_project_get, RequestException=Exception)
 
 POSTS = [
-    {"ID": 11, "post_title": "Faith Over Fear", "post_status": "publish"},
+    {"ID": 11, "post_title": "Faith Over Fear", "post_status": "publish", "url": "https://example.com/faith-over-fear/"},
     {"ID": 12, "post_title": "Faith Over Fear, Again", "post_status": "draft"},
     {"ID": 13, "post_title": "Totally Different", "post_status": "publish"},
 ]
@@ -132,7 +132,9 @@ check("thread recorded", info["wp_thread_id"], "thread-1")
 check("candidates offered", [c["id"] for c in info["wp_candidates"]], [11, 12])
 check("asked once", len(w.sent), 1)
 check("subject", w.sent[0][1], 'Which post is "Faith Over"?')
-check("links are tappable", "https://example.com/?p=11" in w.sent[0][2], True)
+check("offers the public article link", "https://example.com/faith-over-fear/" in w.sent[0][2], True)
+check("draft falls back to ?p=", "https://example.com/?p=12" in w.sent[0][2], True)
+check("says to reply with just the link", "reply with just the link" in w.sent[0][2], True)
 w._finish_doc(info)                       # next poll, still no reply
 check("no repeat ask", len(w.sent), 1)
 check("no audio re-encoded", w._wp_pub.published, [])

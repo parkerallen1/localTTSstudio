@@ -694,20 +694,24 @@ class Watcher:
             return True
 
         lines = [
-            f"The audio for \"{name}\" is ready, but no WordPress post has that "
-            f"exact title, so I haven't attached it to anything yet.",
+            f"The audio for \"{name}\" is ready, but I couldn't find a post with "
+            f"exactly that title, so I haven't attached it yet.",
             "",
-            "Reply to this email with the post's URL and I'll attach it there.",
+            "To attach it, reply with just the link to the post — nothing else.",
+            "",
+            "Closest matches:",
         ]
-        lines += ["", "Closest matches — if it's one of these, reply with its link:"]
         for post in candidates:
-            view, _ = self._post_links(post["ID"])
+            # The public article link, as you'd copy it from the browser. A
+            # draft has no public page yet, so it only has the ?p= form.
+            link = post.get("url") or self._post_links(post["ID"])[0] \
+                or f"post id {post['ID']}"
             status = post.get("post_status", "")
             suffix = f" [{status}]" if status and status != "publish" else ""
-            lines.append(f"  • {post.get('post_title')}{suffix}")
-            lines.append(f"    {view or 'post id ' + str(post['ID'])}")
-        lines += ["", "If it's none of these, reply \"none\" and I'll email you the "
-                      "audio and chapters shortcode to attach by hand."]
+            lines += ["", f"  {post.get('post_title')}{suffix}", f"  {link}"]
+        lines += ["", "Not one of these? Reply with the link to the right post instead, "
+                      "or reply \"none\" and I'll email you the audio and chapters "
+                      "shortcode to attach by hand."]
         if info.get("doc_url"):
             lines += ["", f"The doc: {info['doc_url']}"]
         lines += ["", "— TTS Studio (automated message)"]
