@@ -607,6 +607,22 @@ class Watcher:
     def _wp_notify_address(self, info):
         return (self.wordpress.get("notify") or info.get("sharer_email") or "").strip()
 
+    def _reply_senders(self, info):
+        """Addresses whose reply may name the post.
+
+        Defaults to whoever we asked PLUS the account we send from. The
+        question is asked at one address but the thread lives in the sending
+        mailbox, so replying from either is the natural thing to do — and a
+        reply we refuse looks exactly like one that never arrived. Override
+        with wordpress.reply_from (a string or a list)."""
+        configured = self.wordpress.get("reply_from")
+        if configured:
+            addrs = [configured] if isinstance(configured, str) else list(configured)
+        else:
+            addrs = [self._wp_notify_address(info),
+                     self.email.get("from_address") or ""]
+        return [a.strip().lower() for a in addrs if a and a.strip()]
+
     def _post_links(self, post_id):
         """View and edit links for a post, built from the site URL so they work
         without asking wp-cli for a permalink."""
@@ -750,7 +766,7 @@ class Watcher:
     def _check_reply(self, info):
         """One doc's thread. Returns True if state changed."""
         name = info.get("name") or "document"
-        expect_from = self._wp_notify_address(info).lower()
+        expect_from = self._reply_senders(info)
         creds = self._gmail_credentials()
         r = requests.get(
             f"{GMAIL_THREADS_URL}/{info['wp_thread_id']}",
@@ -778,9 +794,9 @@ class Watcher:
             headers = {h["name"].lower(): h["value"]
                        for h in message.get("payload", {}).get("headers", [])}
             sender = (headers.get("from") or "").lower()
-            if expect_from and expect_from not in sender:
+            if expect_from and not any(e in sender for e in expect_from):
                 log(f"Ignoring a reply about \"{name}\" from {headers.get('from')!r} "
-                    f"— only {expect_from} can name the post.", "warn")
+                    f"— only {', '.join(expect_from)} can name the post.", "warn")
                 continue
             if message.get("id") in (info.get("wp_seen_replies") or []):
                 continue

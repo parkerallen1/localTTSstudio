@@ -253,5 +253,33 @@ check("nbsp and trailing space", _audio_filename("Dare to Hope\u00a0"), "dare-to
 check("empty falls back", _audio_filename("   "), "devotional.m4a")
 check("length capped", len(_audio_filename("A" * 300)), 84)
 
+print("\n--- a reply from either mailbox is accepted ---")
+doc_watcher.requests.get = fake_project_get
+w = make_watcher(POSTS)
+w.email = {"enabled": True, "from_address": "parker.allen21@gmail.com"}
+w.wordpress["notify"] = "pallen@bacc.cc"
+w._gmail_credentials = lambda: types.SimpleNamespace(token="fake")
+w._wp_pub.find_post_by_url = lambda url: {"ID": 13, "post_title": "Totally Different"}
+
+ASK = gmail_message("a1", "TTS Studio <parker.allen21@gmail.com>",
+                    "which post?", labels=("SENT",))
+
+for label, sender in [("replied from the notified address", "Parker <pallen@bacc.cc>"),
+                      ("replied from the sending mailbox", "Parker <parker.allen21@gmail.com>")]:
+    info = entry("Faith Over", wp_status="awaiting_reply", wp_thread_id="t1",
+                 wp_ask_message_id="a1")
+    reply = gmail_message("r1", sender, "https://deepspirituality.com/?p=13")
+    doc_watcher.requests.get = lambda url, **kw: thread_response([ASK, reply])
+    w._check_reply(info)
+    check(label, info.get("wp_post_id"), 13)
+
+info = entry("Faith Over", wp_status="awaiting_reply", wp_thread_id="t1",
+             wp_ask_message_id="a1")
+stranger = gmail_message("r2", "Someone Else <nope@example.com>",
+                         "https://deepspirituality.com/?p=11")
+doc_watcher.requests.get = lambda url, **kw: thread_response([ASK, stranger])
+w._check_reply(info)
+check("a stranger still can't name the post", info.get("wp_post_id"), None)
+
 print(f"\n{len(PASS)} passed, {len(FAIL)} failed")
 sys.exit(1 if FAIL else 0)
