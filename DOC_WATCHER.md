@@ -416,6 +416,7 @@ What happens next, and which emails you get:
 | Only near-matches | Parks the doc and asks | "Which post is …?" with the candidates as links. Reply with the post's URL (or ID) → it publishes and confirms. Reply `none` → the audio email below. |
 | Nothing close (usually: the post doesn't exist yet) | Nothing on WordPress | The audio email — M4A + chapters shortcode, to attach by hand |
 | Publishing gives up after 5 tries | — | A failure notice, plus the audio email |
+| Some paragraphs didn't generate | Held — nothing attached, audio email held too | One "has gaps" notice. Regenerate the failed paragraphs in the app and the next poll carries on as normal — no reply needed |
 
 With WordPress enabled, the "Your audio is ready" email (M4A + shortcode) is
 the **fallback**: it's held until WordPress is settled and only goes out when

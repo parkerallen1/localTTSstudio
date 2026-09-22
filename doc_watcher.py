@@ -447,7 +447,24 @@ class Watcher:
             for p in project.get("paragraphs", [])
             if p.get("hasAudio") and p.get("activeTake")
         ]
-        had_failures = status != "done"  # "done (N of M failed)"
+        # Judged from the paragraphs, not the "done (N of M failed)" label: a
+        # paragraph regenerated in the app afterwards has audio, but the
+        # label never changes.
+        paragraphs = project.get("paragraphs", [])
+        missing = sum(1 for p in paragraphs if not (p.get("hasAudio") and p.get("activeTake")))
+        had_failures = bool(missing)
+
+        # Narration with holes doesn't go on a live post. Hold the WordPress
+        # step — and the audio email, which only goes out once WordPress has
+        # settled — and tell the sharer once. Every poll re-reads the
+        # project, so regenerating the missing paragraphs in the app is all
+        # it takes: the next poll publishes as normal.
+        if need_wp and missing:
+            if not info.get("wp_gap_notified"):
+                self._notify_gaps(info, missing, len(paragraphs))
+                info["wp_gap_notified"] = True
+                changed = True
+            return changed
 
         # A doc parked on "which post is this?" doesn't need the audio
         # re-encoded on every poll — only once there's somewhere to put it.
@@ -775,6 +792,33 @@ class Watcher:
                            "\n".join(lines))
         except Exception as e:
             log(f"Published \"{name}\" but couldn't send the confirmation email: {e}", "warn")
+
+    def _notify_gaps(self, info, missing, total):
+        """Some paragraphs didn't generate — say what to do, once."""
+        name = info.get("name") or "document"
+        log(f"\"{name}\": {missing} of {total} paragraph(s) have no audio — holding "
+            f"it back from WordPress until they're regenerated.", "warn")
+        to_email = self._wp_notify_address(info)
+        if not to_email:
+            return
+        edit_url = (self.email.get("edit_url") or self.app_url).rstrip("/")
+        try:
+            self.send_mail(to_email, f"Audio for \"{name}\" has gaps — not attached yet", "\n".join([
+                f"{missing} of {total} paragraphs didn't generate for \"{name}\", so I "
+                f"haven't attached it to WordPress — narration with holes in it "
+                f"shouldn't go on a live post.",
+                "",
+                "To fix it, open TTS Studio, open the project with that name, and "
+                "regenerate the paragraphs marked as failed:",
+                f"  {edit_url}",
+                "",
+                "Once every paragraph has audio I'll carry on by myself — attach it "
+                "to its post (or ask which post, if I can't tell). No need to reply.",
+                "",
+                "— TTS Studio (automated message)",
+            ]))
+        except Exception as e:
+            log(f"Couldn't send the gaps notice for \"{name}\": {e}", "warn")
 
     def _notify_failure(self, info, kind, reason):
         """Something gave up for good — say so, rather than only logging it."""

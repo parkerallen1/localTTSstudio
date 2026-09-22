@@ -480,5 +480,43 @@ check("dry runs aren't logged", sum(1 for _ in open(doc_watcher.PUBLISH_LOG)), 1
 check("folder name sent to the server",
       '"media_folder"' in open(wp_publisher.__file__).read(), True)
 
+print("\n--- narration with gaps is held back until it's whole ---")
+gap_project = {"import_status": "done (1 of 2 failed)",
+               "paragraphs": [{"id": "p1", "hasAudio": True, "activeTake": 1},
+                              {"id": "p2", "hasAudio": False, "activeTake": None}]}
+def gap_get(url, **kwargs):
+    r = types.SimpleNamespace(status_code=200, raise_for_status=lambda: None)
+    r.json = lambda: gap_project
+    return r
+doc_watcher.requests.get = gap_get
+w = make_watcher(POSTS)
+w.email = {"enabled": True}
+info = entry("Faith Over Fear", email_status="pending", sharer_email="sharer@example.com")
+w._finish_doc(info)
+check("gaps: nothing published", w._wp_pub.published, [])
+check("gaps: one notice, to the sharer", [(s[0], s[1]) for s in w.sent],
+      [("sharer@example.com", 'Audio for "Faith Over Fear" has gaps — not attached yet')])
+check("gaps: audio email held", info["email_status"], "pending")
+check("gaps: still pending", info["wp_status"], "pending")
+w._finish_doc(info)
+check("gaps: notice not repeated", len(w.sent), 1)
+gap_project["paragraphs"][1].update(hasAudio=True, activeTake=2)   # regenerated in the app
+w._finish_doc(info)
+check("regenerated: publishes (label still says failed)", info["wp_status"], "published")
+check("regenerated: audio email not needed", info["email_status"], "not_needed")
+doc_watcher.requests.get = fake_project_get
+
+w = make_watcher(POSTS)
+w.wordpress["enabled"] = False
+w.email = {"enabled": True}
+doc_watcher.requests.get = gap_get
+gap_project["paragraphs"][1].update(hasAudio=False, activeTake=None)
+info = entry("Faith Over Fear", email_status="pending", sharer_email="sharer@example.com",
+             wp_status="skipped")
+w._finish_doc(info)
+check("WordPress off: audio email still goes, with the warning",
+      "some paragraphs didn't generate" in w.sent[-1][2], True)
+doc_watcher.requests.get = fake_project_get
+
 print(f"\n{len(PASS)} passed, {len(FAIL)} failed")
 sys.exit(1 if FAIL else 0)
