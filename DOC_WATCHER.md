@@ -230,13 +230,27 @@ With a `wordpress` block configured, the watcher goes one step further: once a
 doc's audio is ready it finds the post with the same title, uploads the M4A to
 the media library, and sets the ACF fields that point the post at it.
 
-It works over SSH + wp-cli, which matters for two reasons:
+It works over SSH + wp-cli, which matters for three reasons:
 
 - The M4A is streamed to the server and imported with `wp media import`, so it
   never passes through PHP's upload-size limit. A 45-minute devotional is fine.
 - Fields are set with ACF's own `update_field()`. A plain `wp post meta update`
   writes the value but skips the `_fieldname` -> field-key row ACF needs, which
   leaves the field looking empty in the post editor if it had never been set.
+- Each step that must share state runs in a single SSH session. **WP Engine
+  gives every SSH connection its own container** — two connections a second
+  apart report different hostnames and do not share `/tmp` — so the upload and
+  the `wp media import` have to happen in one session, or the import is handed
+  a path that no longer exists. Worth remembering before adding any step that
+  writes a file in one command and reads it in the next.
+
+Two other facts about this host, both measured: the gateway **re-parses the
+command line and strips a level of quoting** (commands are base64-wrapped to
+survive it), and **every wp-cli call costs ~30s**, nearly all of it WordPress
+bootstrap — a direct `$wpdb` query came back in 28s against `wp post list`'s
+30s for ~1,200 posts. Don't optimize the query; the only win available is
+merging round trips. A publish takes roughly two minutes and blocks the
+watcher's poll loop while it runs.
 
 The watcher never changes a post's status. It only sets the fields you name,
 on a post that already exists.
