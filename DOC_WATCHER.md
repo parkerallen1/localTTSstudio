@@ -370,9 +370,10 @@ choice keys before trusting `"Yes"`.
 | `flush_cache` | Purge that one post from WP Engine's page cache after writing (`WpeCommon::purge_varnish_cache`), so the public page isn't stale. |
 | `dry_run` | Match, report, and write nothing. Worth leaving on for the first few docs. |
 
-`{chapters}` writes the same JSON the app's **Copy Chapters Shortcode** button
-produces. A value with no `{placeholder}` in it is written literally, which is
-how the Yes/No flag gets flipped.
+`{chapters}` writes the same chapters as the app's **Copy Chapters Shortcode**
+button, with curly quotes left as characters rather than `\u2019` escapes — the
+way the hand-pasted ones on the site look. A value with no `{placeholder}` in
+it is written literally, which is how the Yes/No flag gets flipped.
 
 ### How a publish writes
 
@@ -426,7 +427,8 @@ stragglers and waits — it reads nothing and those docs stay unpublished until
 you attach them by hand.
 
 The watcher only ever reads the threads it started, and only accepts an answer
-from the address it asked.
+from the address it asked or the one it sends from (compared as parsed
+addresses, not substrings).
 
 ### Notes
 

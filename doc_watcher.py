@@ -92,6 +92,7 @@ import time
 import unicodedata
 from datetime import datetime
 from email.message import EmailMessage
+from email.utils import parseaddr
 
 import requests
 
@@ -624,7 +625,7 @@ class Watcher:
         else:
             addrs = [self._wp_notify_address(info),
                      self.email.get("from_address") or ""]
-        return [a.strip().lower() for a in addrs if a and a.strip()]
+        return [parseaddr(a)[1].strip().lower() for a in addrs if a and a.strip()]
 
     def _post_links(self, post_id):
         """View and edit links for a post, built from the site URL so they work
@@ -806,8 +807,10 @@ class Watcher:
                 continue
             headers = {h["name"].lower(): h["value"]
                        for h in message.get("payload", {}).get("headers", [])}
-            sender = (headers.get("from") or "").lower()
-            if expect_from and not any(e in sender for e in expect_from):
+            # Compare the parsed address, not a substring of the header:
+            # "pallen@bacc.cc" is a substring of "xpallen@bacc.cc.evil.com".
+            sender = parseaddr(headers.get("from") or "")[1].strip().lower()
+            if expect_from and sender not in expect_from:
                 log(f"Ignoring a reply about \"{name}\" from {headers.get('from')!r} "
                     f"— only {', '.join(expect_from)} can name the post.", "warn")
                 continue
@@ -881,7 +884,11 @@ class Watcher:
             return None
         if not data.get("chapters"):
             return None
-        return data.get("shortcode") or json.dumps(data["chapters"], indent=2)
+        # Re-encoded with the real characters rather than taking the app's
+        # "shortcode" string, which escapes them ("God\u2019s"). Editors read
+        # this JSON in the post's textarea and in the email, and the chapters
+        # already on the site were pasted with literal curly quotes.
+        return json.dumps(data["chapters"], indent=2, ensure_ascii=False)
 
     def export_m4a(self, project_id, file_ids):
         """Ask the app to merge the project's segments and encode to M4A."""

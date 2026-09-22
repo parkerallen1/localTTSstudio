@@ -298,6 +298,35 @@ info = entry('[QQT #46] "Faith Blockers & Mountain Movers” ')
 w._finish_doc(info)
 check("& matches and", info.get("wp_post_id"), 33)
 
+print("\n--- chapters keep their real characters ---")
+w = make_watcher(POSTS)
+del w.fetch_chapters_shortcode            # use the real one
+chapters = [{"title": "God’s love “never” runs out", "start": 0}]
+def chapters_get(url, **kw):
+    r = types.SimpleNamespace(status_code=200, raise_for_status=lambda: None)
+    r.json = lambda: {"chapters": chapters, "shortcode": "IGNORED"}
+    return r
+doc_watcher.requests.get = chapters_get
+got = w.fetch_chapters_shortcode("proj-1")
+check("no \\u escapes", "\\u" in got, False)
+check("round-trips", __import__("json").loads(got), chapters)
+doc_watcher.requests.get = fake_project_get
+
+print("\n--- a look-alike sender can't name the post ---")
+w = make_watcher(POSTS)
+w.email = {"enabled": True, "from_address": "parker.allen21@gmail.com"}
+w.wordpress["notify"] = "pallen@bacc.cc"
+w._gmail_credentials = lambda: types.SimpleNamespace(token="fake")
+w._wp_pub.find_post_by_url = lambda url: {"ID": 13, "post_title": "Totally Different"}
+info = entry("Faith Over", wp_status="awaiting_reply", wp_thread_id="t1",
+             wp_ask_message_id="a1")
+lookalike = gmail_message("r3", "Parker <xpallen@bacc.cc.evil.example>",
+                          "https://deepspirituality.com/?p=11")
+doc_watcher.requests.get = lambda url, **kw: thread_response([ASK, lookalike])
+w._check_reply(info)
+check("look-alike rejected", info.get("wp_post_id"), None)
+doc_watcher.requests.get = fake_project_get
+
 print("\n--- an ssh timeout counts as an attempt ---")
 import subprocess
 import wp_publisher
