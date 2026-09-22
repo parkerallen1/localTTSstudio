@@ -1061,9 +1061,10 @@ class Watcher:
         return r.json()
 
 
-def _append_publish_log(info, post_id, result):
+def _append_publish_log(info, post_id, result, matched_by=None):
     """Record a live publish. Best-effort: the publish already happened, so a
-    full disk mustn't turn it into a retry."""
+    full disk mustn't turn it into a retry. `matched_by` overrides the
+    title/reply guess (the backfill passes "backfill")."""
     entry = {
         "at": datetime.now().astimezone().isoformat(timespec="seconds"),
         "doc": info.get("name"),
@@ -1073,7 +1074,7 @@ def _append_publish_log(info, post_id, result):
         "post_title": result.get("post_title"),
         "post_status": result.get("post_status"),
         "permalink": result.get("permalink"),
-        "matched_by": "reply" if info.get("wp_seen_replies") else "title",
+        "matched_by": matched_by or ("reply" if info.get("wp_seen_replies") else "title"),
         "attachment_id": result.get("attachment_id"),
         "audio_url": result.get("audio_url"),
         "replaced": {field: change.get("before")

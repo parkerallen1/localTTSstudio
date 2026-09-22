@@ -125,6 +125,18 @@ foreach ( $selectors as $selector ) {
     $keys[ $selector ] = $key;
 }
 
+// The backfill only fills posts that have no narration of their own. Checked
+// here, in the same run as the write, so a narration someone attached while
+// the audio was generating is never replaced. (A narration pointing at ANOTHER
+// post's attachment — what duplicating a post leaves behind — doesn't count.)
+if ( ! empty( $payload['only_if_no_own_audio'] ) ) {
+    $current = (int) get_field( $keys[ $payload['audio_field'] ], $post_id, false );
+    if ( $current && ( $att = get_post( $current ) ) && (int) $att->post_parent === $post_id ) {
+        $out['skipped'] = "the post already has its own narration (attachment $current)";
+        tts_done( $out );
+    }
+}
+
 // ---- the audio -------------------------------------------------------------
 $attachment_id = 0;
 $reused        = false;
@@ -286,6 +298,54 @@ echo "<<<TTSJSON>>>" . wp_json_encode( $out ) . "<<<TTSEND>>>\n";
 """
 
 
+# Posts in the given categories that have no narration of their own, newest
+# first. "Own" means the narration's attachment belongs to this post: a post
+# made by duplicating another points at the ORIGINAL's audio, which is the
+# wrong narration, so it counts as missing.
+_CANDIDATES_PHP = r"""<?php
+$payload = json_decode( base64_decode( $args[0] ), true );
+$term_ids = array();
+foreach ( (array) $payload['categories'] as $name ) {
+    $term = get_term_by( 'name', $name, 'category' );
+    if ( $term ) $term_ids[] = (int) $term->term_id;
+}
+$out = array( 'ok' => true, 'missing_categories' => count( $term_ids ) < count( (array) $payload['categories'] ), 'posts' => array() );
+if ( $term_ids ) {
+    $ids = get_posts( array(
+        'post_type' => 'post', 'post_status' => 'publish', 'category__in' => $term_ids,
+        'numberposts' => -1, 'fields' => 'ids', 'orderby' => 'date', 'order' => 'DESC',
+    ) );
+    foreach ( $ids as $id ) {
+        $a = (int) get_post_meta( $id, $payload['audio_meta'], true );
+        if ( $a && ( $att = get_post( $a ) ) && (int) $att->post_parent === (int) $id ) continue;
+        $out['posts'][] = array( 'ID' => (int) $id, 'post_title' => get_the_title( $id ) );
+    }
+}
+echo "<<<TTSJSON>>>" . wp_json_encode( $out ) . "<<<TTSEND>>>\n";
+"""
+
+# One post's raw block content, for narrating it.
+_POST_PHP = r"""<?php
+$payload = json_decode( base64_decode( $args[0] ), true );
+$post = get_post( (int) $payload['post_id'] );
+if ( ! $post ) {
+    $out = array( 'ok' => false, 'error' => 'post not found' );
+} else {
+    $a = (int) get_post_meta( $post->ID, $payload['audio_meta'], true );
+    $out = array(
+        'ok'          => true,
+        'ID'          => (int) $post->ID,
+        'post_title'  => get_the_title( $post ),
+        'post_status' => $post->post_status,
+        'permalink'   => get_permalink( $post ),
+        'content'     => $post->post_content,
+        'own_audio'   => $a && ( $att = get_post( $a ) ) && (int) $att->post_parent === (int) $post->ID,
+    );
+}
+echo "<<<TTSJSON>>>" . wp_json_encode( $out ) . "<<<TTSEND>>>\n";
+"""
+
+
 _SMART = {
     "‘": "'", "’": "'", "‚": "'", "‛": "'",
     "“": '"', "”": '"', "„": '"',
@@ -314,6 +374,11 @@ def normalize_title(title):
 
 class WordPressError(RuntimeError):
     pass
+
+
+class WordPressSkip(WordPressError):
+    """The publish declined on purpose (e.g. the post has its own narration
+    now) — not a failure to retry."""
 
 
 class WordPressPublisher:
@@ -487,9 +552,44 @@ class WordPressPublisher:
         title = self._wp(["post", "get", str(post_id), "--field=post_title"], timeout=60).strip()
         return {"ID": post_id, "post_title": title}
 
+    # ---- Backfill ----------------------------------------------------------
+
+    def _eval_json(self, php, payload, timeout=300):
+        """Run a PHP helper (source on stdin, base64 JSON payload as argv[0])."""
+        arg = base64.b64encode(json.dumps(payload).encode()).decode()
+        result = self._fenced_json(self._wp(["eval-file", "-", arg],
+                                            stdin_bytes=php.encode(), timeout=timeout))
+        if not result.get("ok"):
+            raise WordPressError(result.get("error") or "the WordPress helper failed")
+        return result
+
+    def _audio_meta(self):
+        # The candidate/post helpers read the meta row directly, which needs the
+        # field NAME (a field key can't be a meta key).
+        field = (self.cfg.get("audio_field") or "").strip()
+        if field.startswith("field_"):
+            raise WordPressError("the backfill needs wordpress.audio_field as a field name, not a key")
+        return field
+
+    def backfill_candidates(self, categories):
+        """Published posts in these categories with no narration of their own,
+        newest first, as [{ID, post_title}]."""
+        result = self._eval_json(_CANDIDATES_PHP, {
+            "categories": list(categories), "audio_meta": self._audio_meta()}, timeout=600)
+        if result.get("missing_categories"):
+            self._log(f"Some of {list(categories)} aren't categories on the site.", "warn")
+        return result["posts"]
+
+    def post_for_narration(self, post_id):
+        """One post's title, status, permalink, raw block content, and whether
+        it has narration of its own."""
+        return self._eval_json(_POST_PHP, {"post_id": int(post_id),
+                                           "audio_meta": self._audio_meta()})
+
     # ---- Writing -----------------------------------------------------------
 
-    def publish(self, post_id, m4a_path, extra_fields=None, media_title=None, source=""):
+    def publish(self, post_id, m4a_path, extra_fields=None, media_title=None, source="",
+                only_if_no_own_audio=False):
         """Upload the audio and point the post's fields at it — one SSH
         connection, one WordPress bootstrap (see _PUBLISH_PHP).
 
@@ -499,8 +599,9 @@ class WordPressPublisher:
         SSH stdin, so PHP's upload_max_filesize (2M on this host) never
         applies.
 
-        `source` (the doc id) tags the attachment so a retry after a timeout
-        reuses it. Returns the helper's result dict: permalink, edit link,
+        `source` (the project id) tags the attachment so a retry after a
+        timeout reuses it. `only_if_no_own_audio` makes the write decline
+        (WordPressSkip) if the post has gained narration of its own. Returns the helper's result dict: permalink, edit link,
         before/after for each field written, attachment id."""
         audio_field = (self.cfg.get("audio_field") or "").strip()
         if not audio_field:
@@ -518,6 +619,7 @@ class WordPressPublisher:
             "dry_run": self.dry_run,
             "purge_cache": bool(self.cfg.get("flush_cache", True)),
             "media_folder": (self.cfg.get("media_folder") or "").strip(),
+            "only_if_no_own_audio": bool(only_if_no_own_audio),
         }).encode()).decode()
         php = base64.b64encode(_PUBLISH_PHP.encode()).decode()
         prefix = f"cd {_shquote(self.wp_path)} && " if self.wp_path else ""
@@ -541,6 +643,8 @@ class WordPressPublisher:
             with open(m4a_path, "rb") as f:
                 audio = f.read()
         result = self._fenced_json(self._run(script, stdin_bytes=audio))
+        if result.get("skipped"):
+            raise WordPressSkip(result["skipped"])
         if not result.get("ok"):
             raise WordPressError(result.get("error") or "publish failed")
         return result
