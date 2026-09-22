@@ -234,5 +234,17 @@ check("a genuine reply is read", w._check_reply(info), True)
 check("queued to publish", info["wp_status"], "pending")
 check("post taken from the reply", info["wp_post_id"], 13)
 
+print("\n--- a dry run doesn't pretend it published ---")
+doc_watcher.requests.get = fake_project_get   # the reply test above stubbed it
+w = make_watcher(POSTS)
+w.wordpress["dry_run"] = True
+info = entry("Faith Over Fear")
+w._finish_doc(info)
+check("own terminal state", info["wp_status"], "dry_run")
+check("not counted as published", info["wp_status"] == "published", False)
+check("email says so", w.sent[-1][1].startswith("[dry run]"), True)
+check("body leads with the warning", w.sent[-1][2].startswith("DRY RUN"), True)
+check("doc is not reprocessed", w._finish_doc(info), False)
+
 print(f"\n{len(PASS)} passed, {len(FAIL)} failed")
 sys.exit(1 if FAIL else 0)

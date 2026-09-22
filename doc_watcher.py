@@ -558,12 +558,17 @@ class Watcher:
             if tmp and os.path.exists(tmp):
                 os.unlink(tmp)
 
-        info["wp_status"] = "published"
+        # A dry run is recorded as its own terminal state, not as "published".
+        # Calling it published would be a lie the state file then makes
+        # permanent: turning dry_run off wouldn't go back and publish it.
+        dry = bool(self.wordpress.get("dry_run"))
+        info["wp_status"] = "dry_run" if dry else "published"
         info["wp_permalink"] = result.get("permalink")
         info["wp_published_at"] = datetime.now().astimezone().isoformat()
-        log(f"Attached audio for \"{name}\" to post {post_id} — "
+        verb = "Would have attached" if dry else "Attached"
+        log(f"{verb} audio for \"{name}\" to post {post_id} — "
             f"{result.get('permalink')}", "ok")
-        self._notify_published(info, result)
+        self._notify_published(info, result, dry_run=dry)
         return True
 
     def _wp_extra_fields(self, info, project_id):
@@ -652,7 +657,7 @@ class Watcher:
         log(f"No post matched \"{name}\" — asked {to_email} which post it is.", "warn")
         return True
 
-    def _notify_published(self, info, result):
+    def _notify_published(self, info, result, dry_run=False):
         """Tell the operator the audio landed, with links to check it."""
         to_email = self._wp_notify_address(info)
         if not to_email:
@@ -661,13 +666,16 @@ class Watcher:
         view = result.get("permalink") or ""
         edit = result.get("edit_link") or ""
         lines = [
-            f"The audio for \"{name}\" is now attached to "
-            f"\"{result.get('post_title')}\".",
+            (f"DRY RUN — nothing was written. The audio for \"{name}\" WOULD "
+             f"have been attached to \"{result.get('post_title')}\"."
+             if dry_run else
+             f"The audio for \"{name}\" is now attached to "
+             f"\"{result.get('post_title')}\"."),
             "",
             f"  View: {view}",
             f"  Edit: {edit}",
             "",
-            "Fields set:",
+            "Fields that would be set:" if dry_run else "Fields set:",
         ]
         for field, change in (result.get("applied") or {}).items():
             before = change.get("before")
@@ -677,8 +685,9 @@ class Watcher:
             lines += ["", f"Heads up: that post is still {result.get('post_status')} "
                           f"— I didn't change its status."]
         lines += ["", "— TTS Studio (automated message)"]
+        subject = ("[dry run] Would attach audio: " if dry_run else "Audio attached: ")
         try:
-            self.send_mail(to_email, f"Audio attached: {result.get('post_title')}",
+            self.send_mail(to_email, subject + str(result.get("post_title")),
                            "\n".join(lines))
         except Exception as e:
             log(f"Published \"{name}\" but couldn't send the confirmation email: {e}", "warn")
