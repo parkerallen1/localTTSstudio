@@ -1013,8 +1013,7 @@ class Watcher:
 
         attachment = None
         if m4a_bytes:
-            fname = re.sub(r'[^\w\-. ]', "_", doc_name).strip() or "audio"
-            attachment = (m4a_bytes, f"{fname}.m4a")
+            attachment = (m4a_bytes, _audio_filename(doc_name))   # same name as the upload
         return self.send_mail(to_email, f"Your audio is ready: {doc_name}",
                               "\n".join(lines), attachment=attachment)
 

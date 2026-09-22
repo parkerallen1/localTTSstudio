@@ -57,8 +57,11 @@ def make_watcher(posts, fail_publish=False, state=None):
     w._wp_pub = FakePublisher(posts, fail_publish=fail_publish)
     w.state = state or {}
     w.sent = []
+    w.sent_attachments = []
     w.send_mail = lambda to, subject, body, **kw: (
-        w.sent.append((to, subject, body)) or {"threadId": "thread-1"})
+        w.sent.append((to, subject, body))
+        or (kw.get("attachment") and w.sent_attachments.append(kw["attachment"][1]))
+        or {"threadId": "thread-1"})
     w.export_m4a = lambda project_id, file_ids: b"FAKE-M4A-BYTES"
     w.fetch_chapters_shortcode = lambda project_id, name=None: '[{"title":"One","start":0}]'
     return w
@@ -429,6 +432,7 @@ check("no match: no ask", [s for s in w.sent if s[1].startswith("Which post")], 
 check("no match: status", info["wp_status"], "no_match")
 check("no match: audio emailed", len(audio_emails(w)), 1)
 check("no match: says why", "No post on the site matched" in audio_emails(w)[0][2], True)
+check("no match: attachment has the clean name", w.sent_attachments[-1], "something-entirely-unrelated-xyz.m4a")
 check("no match: shortcode included", '[{"title":"One","start":0}]' in audio_emails(w)[0][2], True)
 
 w = emailing_watcher(POSTS, fail_publish=True)
