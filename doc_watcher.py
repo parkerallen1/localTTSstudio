@@ -1014,10 +1014,21 @@ def check_wordpress(config, title=None, post_id=None):
         info = pub.preflight()
     except WordPressError as e:
         print(f"\nFAILED    {e}\n")
-        print("If that's a wp_path problem, ssh in and run `ls -d ~/sites/*/` to")
-        print("see the install directories; if it's a key problem, check that the")
-        print("public half is registered on the host and the private half is")
-        print("readable here (chmod 600).")
+        if "Host key verification" in str(e):
+            # The watcher runs non-interactively, so there is no prompt to
+            # accept the key at — a fresh machine fails here every time.
+            host = pub.host.split("@")[-1]
+            print(f"This machine has never connected to {host}, and the watcher")
+            print("can't answer the trust prompt. Compare the fingerprint against")
+            print("a machine that already trusts it before adding it:")
+            print(f"\n  ssh-keyscan -t rsa {host} > /tmp/k && ssh-keygen -lf /tmp/k")
+            print(f"  ssh-keygen -F {host} -l          # run on the known-good machine")
+            print("\nIf they match, append /tmp/k to ~/.ssh/known_hosts.")
+        else:
+            print("If that's a wp_path problem, ssh in and run `ls -d ~/sites/*/` to")
+            print("see the install directories; if it's a key problem, check that the")
+            print("public half is registered on the host and the private half is")
+            print("readable here (chmod 600).")
         return 1
     print(f"wp-cli    {info['wp_version']}")
     print(f"ACF       {'loaded' if info['acf'] else 'NOT LOADED — nothing to write into'}")
