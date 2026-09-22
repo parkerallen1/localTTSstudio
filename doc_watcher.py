@@ -1172,6 +1172,16 @@ def main():
         watcher.poll_once()
         return
 
+    # The config is read once, at startup. Say what mode we came up in, so
+    # "did my restart actually take?" is answerable from the log instead of by
+    # comparing process ids.
+    if watcher.wordpress.get("enabled"):
+        site = watcher.wordpress.get("site_url") or "the site"
+        log("WordPress hand-off ON — DRY RUN, nothing will be written"
+            if watcher.wordpress.get("dry_run")
+            else f"WordPress hand-off ON — writing live to {site}")
+    elif watcher.wordpress:
+        log("WordPress hand-off is configured but disabled.")
     log(f"Watching Drive for new docs every {poll_seconds}s — app at {watcher.app_url}")
     while True:
         try:
