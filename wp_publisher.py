@@ -307,9 +307,16 @@ $payload = json_decode( base64_decode( $args[0] ), true );
 $term_ids = array();
 foreach ( (array) $payload['categories'] as $name ) {
     $term = get_term_by( 'name', $name, 'category' );
-    if ( $term ) $term_ids[] = (int) $term->term_id;
+    if ( ! $term ) continue;
+    // Sub-categories count: Deep Dives, DIY Studies and Features are
+    // Devotionals too, filed one level down.
+    $term_ids[] = (int) $term->term_id;
+    foreach ( (array) get_term_children( $term->term_id, 'category' ) as $child ) {
+        $term_ids[] = (int) $child;
+    }
 }
-$out = array( 'ok' => true, 'missing_categories' => count( $term_ids ) < count( (array) $payload['categories'] ), 'posts' => array() );
+$term_ids = array_values( array_unique( $term_ids ) );
+$out = array( 'ok' => true, 'missing_categories' => ! $term_ids, 'posts' => array() );
 if ( $term_ids ) {
     $ids = get_posts( array(
         'post_type' => 'post', 'post_status' => 'publish', 'category__in' => $term_ids,
