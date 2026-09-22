@@ -246,5 +246,12 @@ check("email says so", w.sent[-1][1].startswith("[dry run]"), True)
 check("body leads with the warning", w.sent[-1][2].startswith("DRY RUN"), True)
 check("doc is not reprocessed", w._finish_doc(info), False)
 
+print("\n--- the uploaded file is named after the doc ---")
+from doc_watcher import _audio_filename
+check("slugified", _audio_filename("Don\u2019t Give Up \u2014 Part 2"), "dont-give-up-part-2.m4a")
+check("nbsp and trailing space", _audio_filename("Dare to Hope\u00a0"), "dare-to-hope.m4a")
+check("empty falls back", _audio_filename("   "), "devotional.m4a")
+check("length capped", len(_audio_filename("A" * 300)), 84)
+
 print(f"\n{len(PASS)} passed, {len(FAIL)} failed")
 sys.exit(1 if FAIL else 0)

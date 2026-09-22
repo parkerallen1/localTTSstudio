@@ -85,9 +85,11 @@ import base64
 import json
 import os
 import re
+import shutil
 import sys
 import tempfile
 import time
+import unicodedata
 from datetime import datetime
 from email.message import EmailMessage
 
@@ -545,18 +547,22 @@ class Watcher:
         if not m4a_bytes:
             return self._note_attempt(info, "wp", "no audio was generated to attach")
 
-        tmp = None
+        # The uploaded file keeps its basename all the way into the media
+        # library and the public audio URL, so write it under the doc's name
+        # in a scratch directory rather than as a tempfile-random one.
+        tmpdir = None
         try:
             fields = self._wp_extra_fields(info, project_id)
-            fd, tmp = tempfile.mkstemp(prefix="tts-wp-", suffix=".m4a")
-            with os.fdopen(fd, "wb") as f:
+            tmpdir = tempfile.mkdtemp(prefix="tts-wp-")
+            local = os.path.join(tmpdir, _audio_filename(name))
+            with open(local, "wb") as f:
                 f.write(m4a_bytes)
-            result = pub.publish(post_id, tmp, extra_fields=fields, media_title=name)
+            result = pub.publish(post_id, local, extra_fields=fields, media_title=name)
         except (WordPressError, OSError) as e:
             return self._note_attempt(info, "wp", f"publish failed: {e}")
         finally:
-            if tmp and os.path.exists(tmp):
-                os.unlink(tmp)
+            if tmpdir:
+                shutil.rmtree(tmpdir, ignore_errors=True)
 
         # A dry run is recorded as its own terminal state, not as "published".
         # Calling it published would be a lie the state file then makes
@@ -960,6 +966,17 @@ class Watcher:
         )
         r.raise_for_status()
         return r.json()
+
+
+def _audio_filename(doc_name):
+    """A WordPress-friendly filename for a doc's audio.
+
+    This becomes the media library filename and the public URL, so it wants to
+    look like the devotional, not like a temp file."""
+    slug = unicodedata.normalize("NFKD", doc_name or "").encode("ascii", "ignore").decode()
+    slug = re.sub(r"[^\w\s-]", "", slug).strip().lower()
+    slug = re.sub(r"[\s_]+", "-", slug).strip("-")
+    return (slug[:80] or "devotional") + ".m4a"
 
 
 def _message_text(payload):
