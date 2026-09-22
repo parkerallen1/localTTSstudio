@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<!--
+  TTS Studio — "Published" page.
+
+  What the Google Doc watcher (doc_watcher.py) has attached to WordPress: each
+  generated audio, playable, beside the article it went to. For checking in
+  now and then that nothing is landing on the wrong post.
+
+  Static on purpose — the data comes from /api/wp_publishes, which main.py
+  reads from the watcher's append-only publish log. In server mode that API is
+  behind the access code, so this page carries nothing on its own.
+-->
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Published — TTS Studio</title>
+    <link rel="stylesheet" href="/static/style.css?v=__APP_VERSION__">
+    <style>
+        .pub-header { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; flex-wrap: wrap; margin-bottom: 1.5rem; }
+        .pub-header a { color: var(--primary); text-decoration: none; }
+        .pub-table { width: 100%; border-collapse: collapse; }
+        .pub-table th { text-align: left; font-size: 0.8rem; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; padding: 0 0.75rem 0.6rem; border-bottom: 1px solid var(--glass-border); }
+        .pub-table td { padding: 0.9rem 0.75rem; border-bottom: 1px solid var(--glass-border); vertical-align: top; }
+        .pub-table td:first-child { width: 50%; }
+        .pub-table audio { width: 100%; max-width: 420px; height: 36px; display: block; }
+        .pub-meta { font-size: 0.8rem; color: var(--text-muted); margin-top: 0.35rem; overflow-wrap: anywhere; }
+        .pub-meta a { color: var(--text-muted); }
+        .pub-article { color: var(--primary); font-weight: 600; text-decoration: none; overflow-wrap: anywhere; }
+        .pub-article:hover { text-decoration: underline; }
+        .pub-flag { display: inline-block; font-size: 0.72rem; font-weight: 600; padding: 0.05rem 0.45rem; border-radius: 999px; border: 1px solid var(--glass-border); color: var(--text-muted); margin-left: 0.35rem; vertical-align: 1px; }
+        .pub-empty { color: var(--text-muted); padding: 2rem 0; text-align: center; }
+        @media (max-width: 640px) {
+            .pub-table, .pub-table tbody { display: block; }
+            .pub-table thead { display: none; }
+            .pub-table tr { display: block; border-bottom: 1px solid var(--glass-border); padding: 0.75rem 0; }
+            .pub-table td { display: block; width: auto !important; border: none; padding: 0.3rem 0; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="pub-header">
+            <h1>Published</h1>
+            <a href="/">&larr; Back to TTS Studio</a>
+        </div>
+        <p class="subtitle">Audio the Google Doc watcher attached to WordPress, newest first.</p>
+        <div class="glass">
+            <table class="pub-table">
+                <thead><tr><th>Audio</th><th>Article</th></tr></thead>
+                <tbody id="pub-rows"></tbody>
+            </table>
+            <p id="pub-status" class="pub-empty">Loading…</p>
+        </div>
+    </div>
+    <script>
+    (async () => {
+        const rows = document.getElementById('pub-rows');
+        const status = document.getElementById('pub-status');
+        const el = (tag, props = {}, ...children) => {
+            const node = Object.assign(document.createElement(tag), props);
+            node.append(...children);
+            return node;
+        };
+
+        let res;
+        try {
+            res = await fetch('/api/wp_publishes');
+        } catch {
+            status.textContent = "Couldn't reach TTS Studio.";
+            return;
+        }
+        if (res.status === 401) {
+            status.replaceChildren('This page needs the access code — ',
+                el('a', { href: '/', textContent: 'open TTS Studio' }),
+                ', enter it there, then come back.');
+            return;
+        }
+        if (!res.ok) {
+            status.textContent = `Couldn't load the publish log (${res.status}).`;
+            return;
+        }
+        const { entries } = await res.json();
+        if (!entries.length) {
+            status.textContent = 'Nothing has been published yet.';
+            return;
+        }
+        status.remove();
+
+        const when = (iso) => {
+            const d = new Date(iso);
+            return isNaN(d) ? '' : d.toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' });
+        };
+
+        for (const e of entries) {
+            // Audio column: the player, then which doc it came from and when.
+            const audioCell = el('td');
+            if (e.audio_url) {
+                audioCell.append(el('audio', { controls: true, preload: 'none', src: e.audio_url }));
+            }
+            const docLabel = e.doc_url
+                ? el('a', { href: e.doc_url, target: '_blank', rel: 'noopener', textContent: e.doc || 'doc' })
+                : (e.doc || '');
+            audioCell.append(el('div', { className: 'pub-meta' }, docLabel, ` · ${when(e.at)}`));
+
+            // Article column: the post it went to, plus anything worth a second look.
+            const articleCell = el('td');
+            articleCell.append(el('a', {
+                className: 'pub-article', href: e.permalink || '#', target: '_blank', rel: 'noopener',
+                textContent: e.post_title || `Post ${e.post_id}`,
+            }));
+            if (e.post_status && e.post_status !== 'publish') {
+                articleCell.append(el('span', { className: 'pub-flag', textContent: e.post_status }));
+            }
+            if (e.matched_by === 'reply') {
+                articleCell.append(el('span', { className: 'pub-flag', textContent: 'picked by reply' }));
+            }
+            // The audio field is written first, so it's the first key recorded.
+            const replaced = Object.values(e.replaced || {})[0];
+            const notes = [`post ${e.post_id}`];
+            if (replaced) notes.push(`replaced narration #${replaced}`);
+            articleCell.append(el('div', { className: 'pub-meta', textContent: notes.join(' · ') }));
+
+            rows.append(el('tr', {}, audioCell, articleCell));
+        }
+    })();
+    </script>
+</body>
+</html>

@@ -35,6 +35,7 @@ FLAC under the project → user downloads a merged WAV/M4A via `/api/merge` +
 | `static/index.html` | The single UI page. Element IDs are the contract with `script.js`. |
 | `static/script.js` | All frontend logic (parsing, generation, projects, export, settings). One big `DOMContentLoaded` closure. |
 | `static/style.css` | Dark glassmorphism theme. Shared tokens in `:root`. |
+| `static/publishes.html` | Standalone "Published" page (`/publishes`): what the doc watcher attached to WordPress, from `/api/wp_publishes`. |
 | `LocalTTSStudio.spec` | PyInstaller build spec for the `.app`. |
 | `text_parser.py` | Python port of the frontend's Markdown→paragraphs pipeline (keep in sync with `script.js`). Used by `/api/projects/import`. |
 | `doc_watcher.py` | Standalone Google Docs watcher: polls Drive for docs shared with a service account, imports them via `/api/projects/import`. Not bundled into the .app. |

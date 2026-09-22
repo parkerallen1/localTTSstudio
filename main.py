@@ -1202,6 +1202,38 @@ def serve_index():
         html = f.read().replace("__APP_VERSION__", APP_VERSION)
     return HTMLResponse(html, headers={"Cache-Control": "no-cache"})
 
+@app.get("/publishes")
+def serve_publishes():
+    """What the Google Doc watcher has attached to WordPress — see
+    static/publishes.html. The page is static; its data comes from
+    /api/wp_publishes, so in server mode it's behind the access code."""
+    with open(os.path.join(static_dir, "publishes.html"), encoding="utf-8") as f:
+        html = f.read().replace("__APP_VERSION__", APP_VERSION)
+    return HTMLResponse(html, headers={"Cache-Control": "no-cache"})
+
+# Written by doc_watcher.py (one JSON line per live WordPress publish). It
+# lives beside the watcher's own state, not in DATA_DIR: a dev checkout keeps
+# DATA_DIR in ./data, but the watcher always writes to ~/.qwen_tts_studio.
+PUBLISH_LOG = os.environ.get("QWEN_TTS_PUBLISH_LOG") or os.path.expanduser(
+    "~/.qwen_tts_studio/wp_publish_log.jsonl")
+
+@app.get("/api/wp_publishes")
+def get_wp_publishes():
+    """The watcher's publish log, newest first. A line that doesn't parse is
+    skipped rather than failing the page."""
+    entries = []
+    try:
+        with open(PUBLISH_LOG, encoding="utf-8") as f:
+            for line in f:
+                try:
+                    entries.append(json.loads(line))
+                except ValueError:
+                    continue
+    except FileNotFoundError:
+        pass
+    entries.reverse()
+    return {"entries": entries}
+
 @app.get("/api/profiles")
 def get_profiles():
     """List all saved voice profiles."""
