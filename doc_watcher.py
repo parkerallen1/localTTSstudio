@@ -610,6 +610,9 @@ class Watcher:
         verb = "Would have attached" if dry else "Attached"
         log(f"{verb} audio for \"{name}\" to post {post_id} — "
             f"{result.get('permalink')}", "ok")
+        if result.get("folder") not in (None, "filed", "not requested"):
+            log(f"Media folder: {result['folder']} — the audio is in the library, "
+                f"just not in that folder.", "warn")
         self._notify_published(info, result, dry_run=dry)
         return True
 

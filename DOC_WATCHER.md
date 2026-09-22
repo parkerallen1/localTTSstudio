@@ -348,6 +348,7 @@ since names can repeat across field groups — the check prints both.
   },
   "notify": "you@gmail.com",
   "flush_cache": true,
+  "media_folder": "Audio",
   "dry_run": false
 }
 ```
@@ -367,6 +368,7 @@ choice keys before trusting `"Yes"`.
 | `audio_field_format` | `attachment_id` (File/Audio fields) or `url` (text fields). |
 | `extra_fields` | Other ACF fields to set. A value may be a literal (a Select's choice key) or use `{chapters}`, `{doc_name}`, `{doc_url}`. |
 | `notify` | Fallback recipient. Every email — "which post?", "Audio attached", failures, the audio itself — goes to whoever shared the doc; `notify` is used only when Drive can't say who that was. |
+| `media_folder` | FileBird folder to file the upload in, e.g. `"Audio"` or `"Audio/Voices"`. Virtual — it doesn't change the file's URL, which WordPress still dates by the post (`uploads/2021/04/…` for a 2021 post). A missing folder is logged, not fatal. |
 | `flush_cache` | Purge that one post from WP Engine's page cache after writing (`WpeCommon::purge_varnish_cache`), so the public page isn't stale. |
 | `dry_run` | Match, report, and write nothing. Worth leaving on for the first few docs. |
 

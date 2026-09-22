@@ -162,6 +162,28 @@ if ( ! $dry_run ) {
         }
     }
 }
+// FileBird folders are virtual (a table row, not a directory), so this only
+// files the upload in the media library's folder view — the URL is unchanged.
+// "Audio" or "Audio/Voices"; a missing folder or plugin is reported, not fatal.
+$folder = 'not requested';
+if ( ! $dry_run && $attachment_id && ! empty( $payload['media_folder'] ) ) {
+    global $wpdb;
+    $folder_id = 0;
+    foreach ( explode( '/', trim( $payload['media_folder'], '/' ) ) as $part ) {
+        $folder_id = (int) $wpdb->get_var( $wpdb->prepare(
+            "SELECT id FROM {$wpdb->prefix}fbv WHERE name = %s AND parent = %d LIMIT 1",
+            trim( $part ), $folder_id ) );
+        if ( ! $folder_id ) break;
+    }
+    if ( ! class_exists( '\\FileBird\\Model\\Folder' ) ) {
+        $folder = 'FileBird is not active';
+    } elseif ( ! $folder_id ) {
+        $folder = "no FileBird folder named '{$payload['media_folder']}'";
+    } else {
+        \FileBird\Model\Folder::setFoldersForPosts( $attachment_id, $folder_id );
+        $folder = 'filed';
+    }
+}
 $audio_value = $dry_run ? '(dry run)'
     : ( $payload['audio_format'] === 'url' ? wp_get_attachment_url( $attachment_id ) : $attachment_id );
 
@@ -222,6 +244,7 @@ $out = array(
     'attachment_reused' => $reused,
     'audio_url'     => $attachment_id ? wp_get_attachment_url( $attachment_id ) : null,
     'cache'         => $cache,
+    'folder'        => $folder,
     'post_title'    => $post->post_title,
     'post_status'   => $post->post_status,
     'permalink'     => get_permalink( $post_id ),
@@ -492,6 +515,7 @@ class WordPressPublisher:
             "source": str(source or ""),
             "dry_run": self.dry_run,
             "purge_cache": bool(self.cfg.get("flush_cache", True)),
+            "media_folder": (self.cfg.get("media_folder") or "").strip(),
         }).encode()).decode()
         php = base64.b64encode(_PUBLISH_PHP.encode()).decode()
         prefix = f"cd {_shquote(self.wp_path)} && " if self.wp_path else ""
