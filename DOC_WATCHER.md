@@ -252,7 +252,23 @@ ssh install@install.ssh.wpengine.net 'wp --version'
 
 On WP Engine you add the public key under **Users → SSH keys** in the portal
 rather than with `ssh-copy-id`. Copy the private key to the watcher machine and
-`chmod 600` it. Confirm ACF is really loaded there:
+`chmod 600` it.
+
+The watcher machine also needs the host's key in its `known_hosts`. The watcher
+runs non-interactively, so there is no prompt to accept it at — a machine that
+has never connected fails with `Host key verification failed` forever. Don't
+reach for `StrictHostKeyChecking=no`; compare the fingerprint against a machine
+that already trusts it:
+
+```bash
+ssh-keyscan -t rsa install.ssh.wpengine.net > /tmp/k && ssh-keygen -lf /tmp/k
+ssh-keygen -F install.ssh.wpengine.net -l     # on the machine you already use
+```
+
+If the two fingerprints match, `cat /tmp/k >> ~/.ssh/known_hosts` on the
+watcher machine.
+
+Confirm ACF is really loaded there:
 
 ```bash
 ssh install@install.ssh.wpengine.net 'cd sites/install && wp eval "var_dump(function_exists(\"update_field\"));"'
