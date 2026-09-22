@@ -313,7 +313,9 @@ class WordPressPublisher:
 
         Sent over SSH rather than uploaded through WordPress, so PHP's
         upload_max_filesize never enters into it."""
-        remote = "/tmp/tts-upload-$$-" + os.path.basename(local_path)
+        # Uniqueness goes in the DIRECTORY, not the filename: WordPress keeps
+        # the basename for the media library entry and the public URL, so a
+        # "tts-upload-$$-" prefix would end up in the audio's address.
         # The path is referenced as "$F" rather than passed through _shquote:
         # single quotes would stop $$ expanding, and the import would then be
         # handed a filename that differs from the one just written.
@@ -328,9 +330,11 @@ class WordPressPublisher:
         # the prefix separates the id from any notices wp prints alongside it.
         script = (
             f'set -o pipefail\n'
-            f'F="{remote}"\n'
+            f'D="/tmp/tts-upload-$$"\n'
+            f'mkdir -p "$D"\n'
+            f'F="$D/"{_shquote(os.path.basename(local_path))}\n'
             f'cat > "$F"\n'
-            f'trap \'rm -f "$F"\' EXIT\n'
+            f'trap \'rm -rf "$D"\' EXIT\n'
             f'{prefix}wp media import "$F" {" ".join(_shquote(a) for a in args)} '
             f'| sed -e "s/^/{_ID_PREFIX}/"\n'
         )
