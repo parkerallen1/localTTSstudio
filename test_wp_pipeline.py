@@ -100,7 +100,6 @@ check("status", info["wp_status"], "published")
 check("post id", info["wp_post_id"], 11)
 check("audio uploaded", w._wp_pub.published[0][2], b"FAKE-M4A-BYTES")
 check("chapters field sent", w._wp_pub.published[0][1], {})
-check("upload tagged with the project", w._wp_pub.sources, ["proj-1"])
 check("confirmation emailed", len(w.sent), 1)
 
 print("\n--- smart quotes and dashes still match ---")
@@ -282,6 +281,22 @@ stranger = gmail_message("r2", "Someone Else <nope@example.com>",
 doc_watcher.requests.get = lambda url, **kw: thread_response([ASK, stranger])
 w._check_reply(info)
 check("a stranger still can't name the post", info.get("wp_post_id"), None)
+
+print("\n--- the doc's filing tag doesn't stop the match ---")
+doc_watcher.requests.get = fake_project_get
+w = make_watcher([{"ID": 31, "post_title": "Fully Known. Fully Loved.", "post_status": "draft"}])
+info = entry("[QQT #96] Fully Known. Fully Loved.")
+w._finish_doc(info)
+check("tagged doc matches its post", info.get("wp_post_id"), 31)
+w = make_watcher([{"ID": 32, "post_title": "When Courage Feels Heavy", "post_status": "draft"}])
+info = entry("[QQT #86]\U0001F525 When Courage Feels Heavy")
+w._finish_doc(info)
+check("tag plus emoji still matches", info.get("wp_post_id"), 32)
+check("upload tagged with the project", w._wp_pub.sources, ["proj-1"])
+w = make_watcher([{"ID": 33, "post_title": "Faith Blockers and Mountain Movers", "post_status": "publish"}])
+info = entry('[QQT #46] "Faith Blockers & Mountain Movers” ')
+w._finish_doc(info)
+check("& matches and", info.get("wp_post_id"), 33)
 
 print("\n--- an ssh timeout counts as an attempt ---")
 import subprocess

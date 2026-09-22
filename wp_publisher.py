@@ -19,7 +19,9 @@ are worth knowing about how it writes:
 
 Title matching is deliberately fuzzy-tolerant: Docs titles and post titles
 drift (curly vs straight quotes, en dashes, trailing " - Part 2", casing), so
-titles are normalized on both sides before comparing. A single normalized
+titles are normalized on both sides before comparing. A leading bracketed
+tag on the doc name ("[QQT #96] Fully Known. Fully Loved.") is a filing label
+the post never carries, so it's dropped too. A single normalized
 match is treated as THE post; anything else returns ranked candidates and the
 caller asks a human which one it is.
 
@@ -276,9 +278,13 @@ def normalize_title(title):
     autocorrects quotes and dashes, WordPress applies wptexturize — so strip
     all of it and compare the words."""
     text = unicodedata.normalize("NFKC", title or "")
+    # "[QQT #96] Fully Known. Fully Loved." is post "Fully Known. Fully Loved."
+    text = re.sub(r"^\s*\[[^\]]*\]", "", text)
     for bad, good in _SMART.items():
         text = text.replace(bad, good)
     text = text.casefold()
+    # "Faith Blockers & Mountain Movers" is post "...Blockers and Mountain..."
+    text = text.replace("&", " and ")
     text = re.sub(r"[^\w\s]", " ", text)
     return re.sub(r"\s+", " ", text).strip()
 

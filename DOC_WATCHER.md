@@ -399,8 +399,11 @@ reads them back, and purges the post's cache. Why each part is the way it is:
 ### When no post matches
 
 Doc titles and post titles drift — curly vs straight quotes, en dashes,
-casing — so titles are normalized on both sides before comparing. That absorbs
-the punctuation differences, but not a genuinely different title.
+casing, `&` vs "and" — so titles are normalized on both sides before
+comparing. A leading bracketed tag on the doc name is dropped:
+`[QQT #96] Fully Known. Fully Loved.` matches the post `Fully Known. Fully
+Loved.`. That absorbs the differences in form, but not a genuinely different
+title.
 
 When exactly one post matches, the watcher publishes on its own. Otherwise it
 emails `notify` with the closest matches as tappable links and parks the doc.
