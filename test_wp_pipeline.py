@@ -189,5 +189,50 @@ check("links inside a > quote are not mistaken for an answer",
       None)
 check("empty reply", _first_post_reference(_message_text(gmail_text("\n\n"))), None)
 
+print("\n--- the watcher never answers its own question ---")
+
+
+def thread_response(messages):
+    r = types.SimpleNamespace(status_code=200, raise_for_status=lambda: None)
+    r.json = lambda: {"messages": messages}
+    return r
+
+
+def gmail_message(msg_id, sender, text, labels=()):
+    return {"id": msg_id, "labelIds": list(labels),
+            "payload": {"headers": [{"name": "From", "value": sender}],
+                        "mimeType": "text/plain",
+                        "body": {"data": base64.urlsafe_b64encode(
+                            text.encode()).decode().rstrip("=")}}}
+
+
+# The ask and the notify address are the same mailbox -- the case that used to
+# make the watcher read its own candidate links back as the answer.
+SAME = "me@example.com"
+OUR_ASK = gmail_message(
+    "m1", f"TTS Studio <{SAME}>",
+    "Closest matches:\n  https://example.com/?p=11\n  https://example.com/?p=12",
+    labels=("SENT",))
+
+w = make_watcher(POSTS)
+w.email = {"enabled": True}                      # no from_address configured
+w.wordpress["notify"] = SAME
+w._gmail_credentials = lambda: types.SimpleNamespace(token="fake")
+info = entry("Faith Over", wp_status="awaiting_reply", wp_thread_id="t1",
+             wp_ask_message_id="m1")
+
+doc_watcher.requests.get = lambda url, **kw: thread_response([OUR_ASK])
+check("our own ask is not an answer", w._check_reply(info), False)
+check("still waiting", info["wp_status"], "awaiting_reply")
+check("no post picked", info.get("wp_post_id"), None)
+
+REAL_REPLY = gmail_message("m2", f"Parker <{SAME}>",
+                           "https://deepspirituality.com/?p=13")
+doc_watcher.requests.get = lambda url, **kw: thread_response([OUR_ASK, REAL_REPLY])
+w._wp_pub.find_post_by_url = lambda url: {"ID": 13, "post_title": "Totally Different"}
+check("a genuine reply is read", w._check_reply(info), True)
+check("queued to publish", info["wp_status"], "pending")
+check("post taken from the reply", info["wp_post_id"], 13)
+
 print(f"\n{len(PASS)} passed, {len(FAIL)} failed")
 sys.exit(1 if FAIL else 0)

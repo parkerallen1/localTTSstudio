@@ -644,6 +644,7 @@ class Watcher:
 
         info["wp_status"] = "awaiting_reply"
         info["wp_thread_id"] = sent.get("threadId")
+        info["wp_ask_message_id"] = sent.get("id")
         info["wp_asked_at"] = datetime.now().astimezone().isoformat()
         info["wp_candidates"] = [
             {"id": p["ID"], "title": p.get("post_title")} for p in candidates
@@ -749,13 +750,19 @@ class Watcher:
                 "add the gmail.readonly scope, then restart the watcher.")
         r.raise_for_status()
 
-        ours = (self.email.get("from_address") or "").lower()
         for message in r.json().get("messages", []):
+            # Skip our own question. Gmail labels what this account sent as
+            # SENT, which holds even when from_address isn't configured and
+            # the ask therefore comes from the same address we're asking —
+            # without this, the watcher reads its own candidate links back as
+            # the answer and publishes to the first one.
+            if "SENT" in (message.get("labelIds") or []):
+                continue
+            if message.get("id") == info.get("wp_ask_message_id"):
+                continue
             headers = {h["name"].lower(): h["value"]
                        for h in message.get("payload", {}).get("headers", [])}
             sender = (headers.get("from") or "").lower()
-            if ours and ours in sender:
-                continue  # our own ask
             if expect_from and expect_from not in sender:
                 log(f"Ignoring a reply about \"{name}\" from {headers.get('from')!r} "
                     f"— only {expect_from} can name the post.", "warn")
