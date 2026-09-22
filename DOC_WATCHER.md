@@ -463,6 +463,44 @@ ssh mini 'tail -n 5 ~/.qwen_tts_studio/wp_publish_log.jsonl'
 - Nothing here changes `post_status`. A draft stays a draft, and the
   confirmation email says so.
 
+## Backfilling posts that have no audio (`wp_backfill.py`)
+
+The watcher only narrates docs shared from now on. `wp_backfill.py` does the
+back catalogue: published posts in the configured categories with no
+narration **of their own** (a narration pointing at another post's
+attachment — what duplicating a post leaves — counts as missing). Newest
+first, one post at a time, never while anything else is generating, so a
+shared doc always goes first. It publishes through the same path as the
+watcher, so every post shows on the **Published** page; it sends no email.
+
+It reads the text from the post itself: headings, paragraphs, lists and
+scripture quotes (with their citations). Images, embeds, pull quotes, buttons,
+custom HTML, tables of contents and reusable blocks are left out; narration
+stops at the first heading starting with a `stop_at_headings` entry ("Next
+steps" sections are links, not reading). Every `<h2>` becomes a chapter. A
+post under 150 words once embeds are gone is skipped, as is one that gains
+narration of its own before the write, and one whose generation left gaps.
+
+```json
+"backfill": {
+  "enabled": true,
+  "categories": ["Devotionals", "Quick Quiet Times"],
+  "limit": 3,
+  "stop_at_headings": ["Next step"]
+}
+```
+
+`limit` is the total it will publish, then it pauses — raise it and restart.
+
+```bash
+python wp_backfill.py --text 10014751   # the text a post would be read from
+python wp_backfill.py --status          # published / skipped / failed so far
+```
+
+On the mini it runs as launchd `com.localtts.backfill` (log
+`/tmp/localtts-backfill.log`, state `~/.qwen_tts_studio/wp_backfill_state.json`).
+Stop it with `launchctl bootout gui/$(id -u)/com.localtts.backfill`.
+
 ## Day-to-day use
 
 - **Share a doc** with the service-account email (Viewer is enough) → within
