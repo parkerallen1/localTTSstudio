@@ -115,6 +115,9 @@
             if (e.matched_by === 'reply') {
                 articleCell.append(el('span', { className: 'pub-flag', textContent: 'picked by reply' }));
             }
+            if (e.matched_by === 'backfill') {
+                articleCell.append(el('span', { className: 'pub-flag', textContent: 'from post text' }));
+            }
             // The audio field is written first, so it's the first key recorded.
             const replaced = Object.values(e.replaced || {})[0];
             const notes = [`post ${e.post_id}`];

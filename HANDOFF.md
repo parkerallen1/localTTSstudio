@@ -134,6 +134,17 @@ the Published page. If anything is wrong, flip `dry_run` to `true` and restart.
 
 ---
 
+## Backfill (started 2026-09-22 16:07)
+
+`wp_backfill.py` narrates published Devotionals (incl. Deep Dives, DIY
+Studies, Features) and QQTs that have no narration of their own, from the
+post text, newest first — 388 posts, ~817k words, ~160 hours of mini time.
+launchd `com.localtts.backfill`, log `/tmp/localtts-backfill.log`, state
+`~/.qwen_tts_studio/wp_backfill_state.json`, config `backfill` block.
+**Trial: `limit` is 3.** After Parker listens to those on the Published page,
+raise `limit` (e.g. 1000) and `launchctl kickstart -k` it. It yields to
+shared docs, sends no email, and never overwrites a post's own narration.
+
 ## Open items
 
 1. **The reply loop has only handled faked replies.** The first real "which
