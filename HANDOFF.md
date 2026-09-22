@@ -1,6 +1,6 @@
 # Handoff — Google Doc → TTS → WordPress pipeline
 
-**Status: LIVE as of 2026-09-22 11:57 PDT; fixes redeployed 12:25 PDT (`e277870`).** The next Google Doc shared with the
+**Status: LIVE as of 2026-09-22; last deployed 15:02 PDT (`24f9776`). First two real docs published end to end at 14:22 and 14:35.** The next Google Doc shared with the
 service account will import, generate audio, and write to
 `https://deepspirituality.com` unattended. Nothing is in dry-run any more.
 
@@ -18,13 +18,28 @@ work added the last step: attaching that audio to the matching WordPress post.
 |------|------|
 | `wp_publisher.py` | New. All WordPress access: SSH transport, title matching, media upload, ACF writes. |
 | `doc_watcher.py` | Completion pass now does email **and** WordPress. Also reads the "which post?" reply. |
-| `test_wp_pipeline.py` | 46 checks over the state machine, reply parsing and filename slugs. All fakes — run it freely: `./venv/bin/python test_wp_pipeline.py` |
+| `test_wp_pipeline.py` | 90 checks over the state machine, reply parsing, email routing, the publish log and filename slugs. All fakes — run it freely: `./venv/bin/python test_wp_pipeline.py` |
+| `static/publishes.html` + `/api/wp_publishes` | The **Published** page (`/publishes`, header button): each generated audio, playable, beside the article it went to. Reads the publish log below. |
 | `gmail_auth.py` | `--with-replies` adds the `gmail.readonly` scope. |
 
-**Flow:** audio finishes → find the post whose title matches the doc → stream
-the M4A into the media library → set three ACF fields → email a confirmation.
-If no single post title matches, email the closest ones as tappable links and
-park the doc in `awaiting_reply` until a reply names the post.
+**Flow:** audio finishes → find the post whose title matches the doc (leading
+`[QQT #N]` tag dropped) → one SSH session streams the M4A into the media
+library, files it in the FileBird **Audio** folder, sets three ACF fields,
+reads them back, purges the post's cache → append to the publish log → email
+the sharer "Audio attached".
+
+Emails all go to **whoever shared the doc** (`notify` is only a fallback), and
+the audio+shortcode email is the *fallback*, not the announcement:
+
+| Title match | Emails |
+|---|---|
+| exactly one post | "Audio attached" only |
+| near-matches only | "Which post is …?" list; reply a URL → publish, reply `none` → audio email |
+| nothing close | audio + shortcode email |
+| publish gives up (5 tries) | failure notice + audio email |
+
+**Publish log:** `~/.qwen_tts_studio/wp_publish_log.jsonl` on the mini, one
+line per live publish, including what each field held before (for undoing).
 
 ---
 
@@ -78,16 +93,16 @@ their `_field` reference rows, chapters containing `’ “ ” \" \\` stored
 byte-exact, a second publish reusing the same attachment, WP Engine cache
 purged for the post. Post, attachment and file deleted afterwards.
 
-**Still not exercised on real traffic:** the reply loop has only processed
-faked replies. And no *shared doc* has gone through yet, so the first one is
-still worth watching:
+**Real traffic, 2026-09-22:** two shared docs published unattended —
+"How to Have a Change of Heart…" → post 10006402 and "[QQT 12] Faith Over
+Feelings" → post 10015579. Both checked on the site: narration set, Yes flag,
+chapters valid JSON, audio plays. FileBird filing verified on a throwaway
+private post (since deleted) and backfilled onto both.
 
-```bash
-ssh mini 'tail -f /tmp/localtts-docwatcher.log'
-```
+**Still not exercised on real traffic:** the reply loop (faked replies only).
 
-Then check the post: audio plays, `has_devotional_narration` = Yes, chapters
-intact. If anything is wrong, flip `dry_run` back to `true` and restart.
+To watch a doc: `ssh mini 'tail -f /tmp/localtts-docwatcher.log'`, or open
+the Published page. If anything is wrong, flip `dry_run` to `true` and restart.
 
 ---
 
@@ -121,11 +136,16 @@ intact. If anything is wrong, flip `dry_run` back to `true` and restart.
 
 ## Open items
 
-1. **Watch the first shared doc** (above).
+1. **The reply loop has only handled faked replies.** The first real "which
+   post?" email is the first real test of reading a reply.
 2. **Docs imported before the `wordpress` block existed have no `wp_status`**
    and are deliberately skipped — no retro-publishing of the back catalogue.
-3. `AGENTS.md` is untracked at the repo root and was not created by this work.
-   Left alone. (This file is untracked too.)
+3. **The first two live publishes replaced hand-uploaded narration** —
+   post 10006402 (was attachment 10014454) and 10015579 (was 10020103). Both
+   old files are still in the media library if either should go back.
+4. Considered and declined: reading titles from the ds-backend Firestore
+   collections instead of WordPress. Both hold *published posts only*, so the
+   draft a QQT doc belongs to would never match, and the saving is ~30s.
 
 ## Bugs fixed (context for anything that looks odd)
 
