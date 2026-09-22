@@ -305,9 +305,13 @@ echo "<<<TTSJSON>>>" . wp_json_encode( $out ) . "<<<TTSEND>>>\n";
 _CANDIDATES_PHP = r"""<?php
 $payload = json_decode( base64_decode( $args[0] ), true );
 $term_ids = array();
+$missing  = array();
 foreach ( (array) $payload['categories'] as $name ) {
     $term = get_term_by( 'name', $name, 'category' );
-    if ( ! $term ) continue;
+    if ( ! $term ) {
+        $missing[] = $name;
+        continue;
+    }
     // Sub-categories count: Deep Dives, DIY Studies and Features are
     // Devotionals too, filed one level down.
     $term_ids[] = (int) $term->term_id;
@@ -316,7 +320,7 @@ foreach ( (array) $payload['categories'] as $name ) {
     }
 }
 $term_ids = array_values( array_unique( $term_ids ) );
-$out = array( 'ok' => true, 'missing_categories' => ! $term_ids, 'posts' => array() );
+$out = array( 'ok' => true, 'missing_categories' => $missing, 'posts' => array() );
 if ( $term_ids ) {
     $ids = get_posts( array(
         'post_type' => 'post', 'post_status' => 'publish', 'category__in' => $term_ids,
@@ -584,7 +588,7 @@ class WordPressPublisher:
         result = self._eval_json(_CANDIDATES_PHP, {
             "categories": list(categories), "audio_meta": self._audio_meta()}, timeout=600)
         if result.get("missing_categories"):
-            self._log(f"Some of {list(categories)} aren't categories on the site.", "warn")
+            self._log(f"No such category on the site: {result['missing_categories']}", "warn")
         return result["posts"]
 
     def post_for_narration(self, post_id):
