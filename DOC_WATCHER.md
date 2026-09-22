@@ -499,7 +499,9 @@ python wp_backfill.py --status          # published / skipped / failed so far
 
 On the mini it runs as launchd `com.localtts.backfill` (log
 `/tmp/localtts-backfill.log`, state `~/.qwen_tts_studio/wp_backfill_state.json`).
-Stop it with `launchctl bootout gui/$(id -u)/com.localtts.backfill`.
+Stop it with `launchctl bootout gui/$(id -u)/com.localtts.backfill`, or set
+`"enabled": false` and restart it — a disabled backfill exits cleanly and the
+plist (`KeepAlive` → `SuccessfulExit: false`) leaves it stopped.
 
 ## Day-to-day use
 

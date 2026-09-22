@@ -402,7 +402,10 @@ def main():
                             cfg.get("stop_at_headings") or ["Next step"]))
         return
     if not cfg.get("enabled"):
-        sys.exit("backfill.enabled is not true in the config — nothing to do.")
+        # A clean exit, so launchd (KeepAlive: SuccessfulExit false) leaves it
+        # stopped instead of restarting it every few seconds.
+        log("backfill.enabled is not true in the config — exiting.")
+        return
 
     bf = Backfill(config)
     log(f"Backfill ON — {', '.join(cfg.get('categories') or [])}; "
