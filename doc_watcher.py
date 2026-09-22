@@ -18,9 +18,12 @@ turns it into a generated TTS project automatically:
      it. Enable via the "email" config block.
   5. (Optional) Attaches that audio to the WordPress post with the same title,
      over SSH + wp-cli: uploads the M4A to the media library and sets the ACF
-     fields that point the post at it. If no single post title matches, it
-     emails asking which post, and publishes once you reply with the link.
+     fields that point the post at it. If only near-matches exist, it emails
+     them as a list and publishes once you reply with the link (or "none").
      Enable via the "wordpress" config block.
+     With both enabled, step 4's email is the FALLBACK: it's sent only when no
+     post takes the audio (nothing matched, you replied "none", or publishing
+     gave up). A published doc gets just the "Audio attached" confirmation.
 
 Each doc is imported ONCE (tracked in a state file by doc id); edits to an
 already-imported doc are logged but ignored — re-share a copy to regenerate.
@@ -350,7 +353,10 @@ class Watcher:
             save_state(self.state)
             log(f"Imported \"{doc['name']}\" — project {result.get('id')}, "
                 f"{result.get('para_count')} paragraph(s), generation started.", "ok")
-            if email_on and sharer_email:
+            if email_on and sharer_email and self.wordpress.get("enabled"):
+                log(f"When audio finishes: attach it to its post, or failing "
+                    f"that email it to {sharer_email}.")
+            elif email_on and sharer_email:
                 log(f"Will email \"{doc['name']}\" to {sharer_email} when audio finishes.")
             elif email_on:
                 log(f"Emailing on, but couldn't determine who shared \"{doc['name']}\" "
@@ -444,21 +450,33 @@ class Watcher:
         wp_wants_audio = need_wp and (info.get("wp_status") == "pending"
                                       or info.get("wp_post_id"))
         m4a_bytes = None
-        if file_ids and (need_email or wp_wants_audio):
+        if file_ids and wp_wants_audio:
             try:
                 m4a_bytes = self.export_m4a(project_id, file_ids)
             except requests.RequestException as e:
-                if need_email:
-                    changed |= self._note_attempt(info, "email", f"export failed: {e}")
-                if need_wp:
-                    changed |= self._note_attempt(info, "wp", f"export failed: {e}")
-                return changed
+                return changed | self._note_attempt(info, "wp", f"export failed: {e}")
 
-        if need_email:
-            changed |= self._email_doc(info, project_id, m4a_bytes, file_ids, had_failures)
         if need_wp:
             changed |= self._wordpress_doc(info, project_id, m4a_bytes)
-        return changed
+
+        # The audio email is the FALLBACK, not the announcement. While
+        # WordPress might still take the audio (matching, or waiting on a
+        # "which post?" reply) it's held; once the audio is on a post the
+        # "Audio attached" confirmation is the only email. It goes out only
+        # when WordPress ends without the audio: no post matched, the reply
+        # said none of them, or publishing gave up.
+        wp_status = info.get("wp_status")
+        if info.get("email_status") != "pending" or wp_status in ("pending", "awaiting_reply"):
+            return changed
+        if wp_status == "published":
+            info["email_status"] = "not_needed"
+            return True
+        if file_ids and m4a_bytes is None:
+            try:
+                m4a_bytes = self.export_m4a(project_id, file_ids)
+            except requests.RequestException as e:
+                return changed | self._note_attempt(info, "email", f"export failed: {e}")
+        return changed | self._email_doc(info, project_id, m4a_bytes, file_ids, had_failures)
 
     def _email_doc(self, info, project_id, m4a_bytes, file_ids, had_failures):
         """Send the finished audio back to whoever shared the doc."""
@@ -476,8 +494,15 @@ class Watcher:
         if file_ids:
             chapters_shortcode = self.fetch_chapters_shortcode(project_id, info.get("name"))
 
+        wp_note = {
+            "no_match": "No post on the site matched this title, so it isn't "
+                        "attached to anything yet — here it is to attach by hand.",
+            "failed": "I couldn't attach it to its WordPress post (there's a "
+                      "separate email with the error) — here it is to attach by hand.",
+        }.get(info.get("wp_status")) if self.wordpress.get("enabled") else None
         try:
             self.send_completion_email(
+                wp_note=wp_note,
                 to_email=to_email,
                 to_name=info.get("sharer_name"),
                 doc_name=info.get("name") or "your document",
@@ -521,9 +546,10 @@ class Watcher:
     def _wordpress_doc(self, info, project_id, m4a_bytes):
         """Attach this doc's finished audio to its WordPress post.
 
-        Three outcomes: "published" (exactly one post title matched, or a
-        human has since told us which post it is), "awaiting_reply" (we
-        emailed to ask), or a retry/give-up via _note_attempt."""
+        Outcomes: "published" (exactly one post title matched, or a human
+        has since told us which post it is), "awaiting_reply" (near-matches
+        only — we emailed the list to ask), "no_match" (nothing close; the
+        audio email takes over), or a retry/give-up via _note_attempt."""
         name = info.get("name") or "document"
         try:
             pub = self._wp_publisher()
@@ -538,6 +564,12 @@ class Watcher:
                 post, candidates = pub.match_title(name)
             except WordPressError as e:
                 return self._note_attempt(info, "wp", f"title lookup failed: {e}")
+            if not post and not candidates:
+                # Nothing on the site is even close — most often the post
+                # hasn't been made yet. The audio email carries it instead.
+                info["wp_status"] = "no_match"
+                log(f"No post resembles \"{name}\" — sending the audio by email instead.", "warn")
+                return True
             if not post:
                 return self._ask_which_post(info, candidates)
             post_id = post["ID"]
@@ -637,7 +669,7 @@ class Watcher:
                 f"{site}/wp-admin/post.php?post={post_id}&action=edit")
 
     def _ask_which_post(self, info, candidates):
-        """No single post title matched — email and ask which post this is.
+        """Only near-matches — email them and ask which post this is.
 
         The reply is picked up by check_replies() on a later poll."""
         name = info.get("name") or "document"
@@ -654,16 +686,15 @@ class Watcher:
             "",
             "Reply to this email with the post's URL and I'll attach it there.",
         ]
-        if candidates:
-            lines += ["", "Closest matches — if it's one of these, reply with its link:"]
-            for post in candidates:
-                view, _ = self._post_links(post["ID"])
-                status = post.get("post_status", "")
-                suffix = f" [{status}]" if status and status != "publish" else ""
-                lines.append(f"  • {post.get('post_title')}{suffix}")
-                lines.append(f"    {view or 'post id ' + str(post['ID'])}")
-        else:
-            lines += ["", "Nothing on the site came close to that title."]
+        lines += ["", "Closest matches — if it's one of these, reply with its link:"]
+        for post in candidates:
+            view, _ = self._post_links(post["ID"])
+            status = post.get("post_status", "")
+            suffix = f" [{status}]" if status and status != "publish" else ""
+            lines.append(f"  • {post.get('post_title')}{suffix}")
+            lines.append(f"    {view or 'post id ' + str(post['ID'])}")
+        lines += ["", "If it's none of these, reply \"none\" and I'll email you the "
+                      "audio and chapters shortcode to attach by hand."]
         if info.get("doc_url"):
             lines += ["", f"The doc: {info['doc_url']}"]
         lines += ["", "— TTS Studio (automated message)"]
@@ -746,7 +777,10 @@ class Watcher:
                     "",
                     f"Last error: {reason}",
                     "",
-                    "The audio itself is fine — open TTS Studio and export it by hand.",
+                    ("The audio itself is fine — it's on its way to "
+                     f"{info.get('sharer_email')} with the chapters shortcode."
+                     if info.get("email_status") == "pending" else
+                     "The audio itself is fine — open TTS Studio and export it by hand."),
                     "",
                     "— TTS Studio (automated message)",
                 ]))
@@ -823,6 +857,11 @@ class Watcher:
     def _apply_reply(self, info, body):
         """Turn the human's reply into a post id, or ask again."""
         name = info.get("name") or "document"
+        if re.match(r"\s*(none|no|neither|nope)\b", body or "", re.IGNORECASE):
+            info["wp_status"] = "no_match"   # the audio email goes out next
+            log(f"Reply for \"{name}\" says it's none of the offered posts — "
+                f"emailing the audio instead.", "ok")
+            return True
         target = _first_post_reference(body)
         if not target:
             return self._reply_problem(
@@ -922,7 +961,7 @@ class Watcher:
 
     def send_completion_email(self, to_email, to_name, doc_name, m4a_bytes,
                               had_failures=False, have_audio=True,
-                              chapters_shortcode=None):
+                              chapters_shortcode=None, wp_note=None):
         cfg = self.email
         edit_url = (cfg.get("edit_url") or self.app_url).rstrip("/")
         first = (to_name or "").split(" ")[0].strip()
@@ -937,6 +976,8 @@ class Watcher:
         else:
             lines.append(f'The project "{doc_name}" finished processing, but no audio '
                          f'was generated. Open TTS Studio to take a look.')
+        if wp_note:
+            lines += ["", wp_note]
         if had_failures:
             lines.append("")
             lines.append("Note: some paragraphs didn't generate — you may want to "

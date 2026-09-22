@@ -375,5 +375,67 @@ except WordPressError as e:
     got = str(e)
 check("PHP error surfaces", got, "field x missing")
 
+print("\n--- the audio email is the fallback, not the announcement ---")
+doc_watcher.requests.get = fake_project_get
+
+
+def emailing_watcher(posts, **kw):
+    w = make_watcher(posts, **kw)
+    w.email = {"enabled": True}
+    return w
+
+
+def audio_emails(w):
+    return [s for s in w.sent if s[1].startswith("Your audio is ready")]
+
+
+w = emailing_watcher(POSTS)
+info = entry("Faith Over Fear", email_status="pending", sharer_email="me@example.com")
+w._finish_doc(info)
+check("matched: published", info["wp_status"], "published")
+check("matched: no audio email", audio_emails(w), [])
+check("matched: only the confirmation", [s[1] for s in w.sent], ["Audio attached: Faith Over Fear"])
+check("matched: email marked not needed", info["email_status"], "not_needed")
+check("matched: settled", w._finish_doc(info), False)
+
+w = emailing_watcher(POSTS)
+info = entry("Faith Over", email_status="pending", sharer_email="me@example.com")
+w._finish_doc(info)
+check("candidates: asks", info["wp_status"], "awaiting_reply")
+check("candidates: no audio email yet", audio_emails(w), [])
+check("candidates: email still held", info["email_status"], "pending")
+check("candidates: offers 'none'", '"none"' in w.sent[0][2], True)
+
+w._gmail_credentials = lambda: types.SimpleNamespace(token="fake")
+w.email["from_address"] = "bot@example.com"
+none_reply = gmail_message("n1", "Me <me@example.com>", "None of these, thanks")
+doc_watcher.requests.get = lambda url, **kw: thread_response([none_reply])
+w._check_reply(info)
+check("reply 'none': no match", info["wp_status"], "no_match")
+doc_watcher.requests.get = fake_project_get
+w._finish_doc(info)
+check("reply 'none': audio emailed", len(audio_emails(w)), 1)
+check("reply 'none': email sent", info["email_status"], "sent")
+
+w = emailing_watcher(POSTS)
+info = entry("Something Entirely Unrelated Xyz", email_status="pending",
+             sharer_email="me@example.com")
+w._finish_doc(info)
+check("no match: no ask", [s for s in w.sent if s[1].startswith("Which post")], [])
+check("no match: status", info["wp_status"], "no_match")
+check("no match: audio emailed", len(audio_emails(w)), 1)
+check("no match: says why", "No post on the site matched" in audio_emails(w)[0][2], True)
+check("no match: shortcode included", '[{"title":"One","start":0}]' in audio_emails(w)[0][2], True)
+
+w = emailing_watcher(POSTS, fail_publish=True)
+info = entry("Faith Over Fear", email_status="pending", sharer_email="me@example.com")
+for _ in range(doc_watcher.MAX_WP_ATTEMPTS - 1):
+    w._finish_doc(info)
+check("failing: audio held while retrying", audio_emails(w), [])
+w._finish_doc(info)
+check("gave up: audio emailed as fallback", len(audio_emails(w)), 1)
+check("gave up: failure notice points at it", "on its way to me@example.com" in
+      [s for s in w.sent if s[1].startswith("Couldn't attach")][0][2], True)
+
 print(f"\n{len(PASS)} passed, {len(FAIL)} failed")
 sys.exit(1 if FAIL else 0)
