@@ -367,12 +367,34 @@ choice keys before trusting `"Yes"`.
 | `audio_field_format` | `attachment_id` (File/Audio fields) or `url` (text fields). |
 | `extra_fields` | Other ACF fields to set. A value may be a literal (a Select's choice key) or use `{chapters}`, `{doc_name}`, `{doc_url}`. |
 | `notify` | Who gets asked "which post?" and told when it lands. Defaults to whoever shared the doc. |
-| `flush_cache` | Run `wp page-cache flush` after writing, so the public page isn't stale. |
+| `flush_cache` | Purge that one post from WP Engine's page cache after writing (`WpeCommon::purge_varnish_cache`), so the public page isn't stale. |
 | `dry_run` | Match, report, and write nothing. Worth leaving on for the first few docs. |
 
 `{chapters}` writes the same JSON the app's **Copy Chapters Shortcode** button
 produces. A value with no `{placeholder}` in it is written literally, which is
 how the Yes/No flag gets flipped.
+
+### How a publish writes
+
+One SSH connection, one WordPress bootstrap (~45s): the M4A streams over the
+connection's stdin, and a single `wp eval-file` imports it, writes the fields,
+reads them back, and purges the post's cache. Why each part is the way it is:
+
+- **Values are `wp_slash()`ed before `update_field()`.** It ends in core's
+  `update_metadata()`, which *unslashes* — it expects `$_POST` data. Without
+  the slash the chapters JSON silently loses every backslash (`\u2019` →
+  `u2019`, `\"` ends the string). Every field is then read back and compared;
+  a mismatch puts the previous values back and fails the attempt.
+- **Fields are written by key.** A name only resolves through a post's
+  `_fieldname` reference row, which a post never saved in the editor doesn't
+  have; names are resolved through the post's field groups instead.
+- **Retries don't duplicate the upload.** The attachment is tagged
+  `_tts_source` = the project id, so an attempt that timed out after the import
+  finished is picked up by the next one rather than uploaded again.
+- **Existing values are overwritten.** New posts are made by duplicating the
+  previous one, so they arrive carrying *its* narration and chapters — refusing
+  to overwrite would block the normal case. The confirmation email lists every
+  old value; the old audio stays in the media library.
 
 ### When no post matches
 
@@ -408,8 +430,8 @@ from the address it asked.
 - Docs imported before you enabled the `wordpress` block have no `wp_status`
   in the state file and are deliberately left alone — enabling this doesn't
   retro-publish your back catalogue.
-- A publish failure retries once per poll, five times, then emails you and
-  gives up. The audio itself is unaffected; export it from the app by hand.
+- A publish failure (including an SSH timeout) retries once per poll, five
+  times, then emails you and gives up. The audio itself is unaffected; export it from the app by hand.
 - Nothing here changes `post_status`. A draft stays a draft, and the
   confirmation email says so.
 

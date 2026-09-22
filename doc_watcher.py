@@ -64,7 +64,7 @@ Setup (one-time, see DOC_WATCHER.md for the full walkthrough):
           },
           "notify": "you@gmail.com",   // who gets asked / told; defaults to
                                        // whoever shared the doc
-          "flush_cache": true,         // clear WP Engine's page cache after
+          "flush_cache": true,         // purge this post from WP Engine's cache
           "dry_run": false             // true = match and report, write nothing
         }
       }
@@ -557,7 +557,10 @@ class Watcher:
             local = os.path.join(tmpdir, _audio_filename(name))
             with open(local, "wb") as f:
                 f.write(m4a_bytes)
-            result = pub.publish(post_id, local, extra_fields=fields, media_title=name)
+            # project_id tags the upload, so a retry after a timeout that
+            # actually succeeded reuses it rather than uploading it twice.
+            result = pub.publish(post_id, local, extra_fields=fields,
+                                 media_title=name, source=project_id)
         except (WordPressError, OSError) as e:
             return self._note_attempt(info, "wp", f"publish failed: {e}")
         finally:
@@ -696,13 +699,23 @@ class Watcher:
             "",
             f"  View: {view}",
             f"  Edit: {edit}",
+        ]
+        if result.get("audio_url"):
+            lines.append(f"  Audio: {result['audio_url']}")
+        lines += [
             "",
             "Fields that would be set:" if dry_run else "Fields set:",
         ]
         for field, change in (result.get("applied") or {}).items():
             before = change.get("before")
-            was = "was empty" if before in (None, "", False) else f"was {before!r}"
-            lines.append(f"  • {field} -> {change.get('after')!r} ({was})")
+            was = "was empty" if before in (None, "", False) else f"was {_clip(before)}"
+            lines.append(f"  • {field} -> {_clip(change.get('after'))} ({was})")
+        if not dry_run:
+            lines += ["", "Any audio it replaced is still in the media library — "
+                          "pick it again in the editor to undo."]
+        if not dry_run and result.get("cache") not in (None, "purged", "skipped"):
+            lines += ["", f"Cache: {result['cache']} — the public page may be "
+                          f"stale for a while."]
         if result.get("post_status") != "publish":
             lines += ["", f"Heads up: that post is still {result.get('post_status')} "
                           f"— I didn't change its status."]
@@ -982,6 +995,12 @@ class Watcher:
         )
         r.raise_for_status()
         return r.json()
+
+
+def _clip(value, limit=100):
+    """A field value short enough for an email line (chapters JSON isn't)."""
+    text = repr(value)
+    return text if len(text) <= limit else text[:limit - 1] + "…"
 
 
 def _audio_filename(doc_name):

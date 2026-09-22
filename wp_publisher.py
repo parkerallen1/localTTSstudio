@@ -13,8 +13,9 @@ are worth knowing about how it writes:
     the "_fieldname" -> field-key mapping row ACF needs, which leaves the
     field blank in the post editor if it had never been set before.
   • The M4A is streamed over the SSH connection to a temp path on the server
-    and then pulled in with `wp media import`, so it never goes through PHP's
-    upload-size limit. A 45-minute devotional is fine.
+    and imported by the same PHP run that sets the fields, so it never goes
+    through PHP's upload-size limit and a publish is a single transaction —
+    see _PUBLISH_PHP for why each step is shaped the way it is.
 
 Title matching is deliberately fuzzy-tolerant: Docs titles and post titles
 drift (curly vs straight quotes, en dashes, trailing " - Part 2", casing), so
@@ -40,42 +41,191 @@ from datetime import datetime
 # fences its JSON and we pull it back out from between these markers.
 _JSON_OPEN = "<<<TTSJSON>>>"
 _JSON_CLOSE = "<<<TTSEND>>>"
-# Marks the attachment id in wp-cli output that may also carry notices.
-_ID_PREFIX = "TTSID:"
 
 # A normalized title this similar to the doc's is worth offering as a "did you
 # mean" candidate; below it, the post is almost certainly unrelated.
 CANDIDATE_THRESHOLD = 0.62
 
-# PHP run by `wp eval-file -` (source on stdin, base64 payload as argv[0]).
-_APPLY_PHP = r"""<?php
+# The whole publish, run by `wp eval-file` in ONE WordPress bootstrap:
+# import the audio, point the fields at it, read them back, purge the post's
+# cache. argv: [0] base64 JSON payload, [1] path of the streamed audio.
+#
+# Why it is shaped like this:
+#   • Values are wp_slash()ed. update_field() ends in update_metadata(), which
+#     wp_unslash()es — it expects slashed $_POST data. Unslashed, the chapters
+#     JSON loses every backslash: "’" becomes "u2019" and an escaped \"
+#     ends the string early. Every field is read back and compared to prove it.
+#   • Fields are written by field KEY. A name only resolves through the post's
+#     own "_name" reference rows or a field-group lookup; the key always does.
+#   • Anything that fails after the first write puts the old values back, so a
+#     post is never left half-updated (e.g. new audio, old chapters).
+#   • The attachment is tagged with the doc's id. If an earlier attempt timed
+#     out after importing, the retry reuses that attachment instead of adding a
+#     duplicate to the media library.
+_PUBLISH_PHP = r"""<?php
 $payload = json_decode( base64_decode( $args[0] ), true );
-$out = array( 'ok' => false );
+$file    = isset( $args[1] ) ? $args[1] : '';
+$post_id = (int) $payload['post_id'];
+$dry_run = ! empty( $payload['dry_run'] );
+$out     = array( 'ok' => false );
+
+function tts_done( $out ) {
+    echo "<<<TTSJSON>>>" . wp_json_encode( $out ) . "<<<TTSEND>>>\n";
+    exit( 0 );
+}
+// A field NAME resolves through the post's "_name" reference row, which only
+// exists once the post has been saved in the editor (or copied from one that
+// was). Fall back to the field groups that apply to this post — the same
+// lookup the editor does — so a never-edited post still works.
+function tts_field_key( $selector, $post_id ) {
+    if ( acf_is_field_key( $selector ) ) {
+        $field = acf_get_field( $selector );
+        return $field ? $field['key'] : null;
+    }
+    $field = acf_maybe_get_field( $selector, $post_id );
+    if ( $field && ! empty( $field['key'] ) ) {
+        return $field['key'];
+    }
+    $groups = acf_get_field_groups( array( 'post_id' => $post_id, 'post_type' => get_post_type( $post_id ) ) );
+    foreach ( $groups as $group ) {
+        foreach ( (array) acf_get_fields( $group ) as $field ) {
+            if ( $field['name'] === $selector ) {
+                return $field['key'];
+            }
+        }
+    }
+    return null;
+}
+function tts_raw( $key, $post_id ) {
+    $v = get_field( $key, $post_id, false );
+    return is_scalar( $v ) || is_null( $v ) ? $v : wp_json_encode( $v );
+}
+
 if ( ! function_exists( 'update_field' ) ) {
     $out['error'] = 'ACF is not active on this install (update_field missing)';
-} elseif ( ! ( $post = get_post( (int) $payload['post_id'] ) ) ) {
-    $out['error'] = 'post ' . (int) $payload['post_id'] . ' not found';
-} else {
-    $post_id = (int) $payload['post_id'];
-    $applied = array();
-    foreach ( (array) $payload['fields'] as $selector => $value ) {
-        $before = get_field( $selector, $post_id );
-        if ( empty( $payload['dry_run'] ) ) {
-            update_field( $selector, $value, $post_id );
-        }
-        $applied[ $selector ] = array(
-            'before' => is_scalar( $before ) || is_null( $before ) ? $before : wp_json_encode( $before ),
-            'after'  => is_scalar( $value ) ? $value : wp_json_encode( $value ),
-        );
-    }
-    $out['ok']          = true;
-    $out['applied']     = $applied;
-    $out['post_title']  = $post->post_title;
-    $out['post_status'] = $post->post_status;
-    $out['permalink']   = get_permalink( $post_id );
-    $out['edit_link']   = admin_url( 'post.php?post=' . $post_id . '&action=edit' );
+    tts_done( $out );
 }
-echo "<<<TTSJSON>>>" . wp_json_encode( $out ) . "<<<TTSEND>>>\n";
+if ( ! ( $post = get_post( $post_id ) ) ) {
+    $out['error'] = "post $post_id not found";
+    tts_done( $out );
+}
+
+// Resolve every selector BEFORE touching anything: a typo'd field should fail
+// the publish, not leave an orphaned upload behind it.
+$selectors = array_merge( array( $payload['audio_field'] ), array_keys( (array) $payload['fields'] ) );
+$keys = array();
+foreach ( $selectors as $selector ) {
+    $key = tts_field_key( $selector, $post_id );
+    if ( ! $key ) {
+        $out['error'] = "ACF field '$selector' isn't in any field group on post $post_id";
+        tts_done( $out );
+    }
+    $keys[ $selector ] = $key;
+}
+
+// ---- the audio -------------------------------------------------------------
+$attachment_id = 0;
+$reused        = false;
+if ( ! $dry_run ) {
+    $existing = get_posts( array(
+        'post_type'   => 'attachment',
+        'post_status' => 'inherit',
+        'post_parent' => $post_id,
+        'meta_key'    => '_tts_source',
+        'meta_value'  => (string) $payload['source'],
+        'fields'      => 'ids',
+        'numberposts' => 1,
+    ) );
+    if ( $payload['source'] !== '' && $existing ) {
+        $attachment_id = (int) $existing[0];
+        $reused        = true;
+    } else {
+        require_once ABSPATH . 'wp-admin/includes/file.php';
+        require_once ABSPATH . 'wp-admin/includes/media.php';
+        require_once ABSPATH . 'wp-admin/includes/image.php';
+        if ( ! $file || ! is_file( $file ) || ! filesize( $file ) ) {
+            $out['error'] = 'the audio did not arrive on the server';
+            tts_done( $out );
+        }
+        $id = media_handle_sideload(
+            array( 'name' => $payload['filename'], 'tmp_name' => $file ),
+            $post_id, $payload['title'] );
+        if ( is_wp_error( $id ) ) {
+            $out['error'] = 'media import failed: ' . $id->get_error_message();
+            tts_done( $out );
+        }
+        $attachment_id = (int) $id;
+        if ( $payload['source'] !== '' ) {
+            update_post_meta( $attachment_id, '_tts_source', (string) $payload['source'] );
+        }
+    }
+}
+$audio_value = $dry_run ? '(dry run)'
+    : ( $payload['audio_format'] === 'url' ? wp_get_attachment_url( $attachment_id ) : $attachment_id );
+
+// ---- the fields ------------------------------------------------------------
+$values = array( $payload['audio_field'] => $audio_value ) + (array) $payload['fields'];
+$before = array();
+foreach ( $values as $selector => $value ) {
+    $before[ $selector ] = tts_raw( $keys[ $selector ], $post_id );
+}
+$problem = null;
+if ( ! $dry_run ) {
+    foreach ( $values as $selector => $value ) {
+        update_field( $keys[ $selector ], wp_slash( $value ), $post_id );
+    }
+    wp_cache_delete( $post_id, 'post_meta' );
+    foreach ( $values as $selector => $value ) {
+        $stored = tts_raw( $keys[ $selector ], $post_id );
+        if ( (string) $stored !== (string) $value ) {
+            $problem = "$selector read back differently from what was written";
+            break;
+        }
+    }
+    if ( $problem ) {
+        foreach ( $before as $selector => $old ) {
+            if ( $old === null || $old === '' ) {
+                delete_field( $keys[ $selector ], $post_id );
+            } else {
+                update_field( $keys[ $selector ], wp_slash( $old ), $post_id );
+            }
+        }
+        $out['error'] = "$problem — restored the previous values";
+        $out['attachment_id'] = $attachment_id;
+        tts_done( $out );
+    }
+}
+
+$applied = array();
+foreach ( $values as $selector => $value ) {
+    $applied[ $selector ] = array( 'before' => $before[ $selector ], 'after' => $value );
+}
+
+// ---- the public page -------------------------------------------------------
+$cache = 'skipped';
+if ( ! $dry_run && ! empty( $payload['purge_cache'] ) ) {
+    clean_post_cache( $post_id );
+    if ( class_exists( 'WpeCommon' ) && method_exists( 'WpeCommon', 'purge_varnish_cache' ) ) {
+        WpeCommon::purge_varnish_cache( $post_id );
+        $cache = 'purged';
+    } else {
+        $cache = 'no WP Engine cache API — object cache cleared only';
+    }
+}
+
+$out = array(
+    'ok'            => true,
+    'applied'       => $applied,
+    'attachment_id' => $attachment_id,
+    'attachment_reused' => $reused,
+    'audio_url'     => $attachment_id ? wp_get_attachment_url( $attachment_id ) : null,
+    'cache'         => $cache,
+    'post_title'    => $post->post_title,
+    'post_status'   => $post->post_status,
+    'permalink'     => get_permalink( $post_id ),
+    'edit_link'     => admin_url( 'post.php?post=' . $post_id . '&action=edit' ),
+);
+tts_done( $out );
 """
 
 # Reports what the configured ACF fields actually are, so a setup can be
@@ -172,12 +322,19 @@ class WordPressPublisher:
         payload = base64.b64encode(remote_cmd.encode()).decode()
         wrapper = (f"S=/tmp/tts-cmd-$$.sh; echo {payload} | base64 -d > $S; "
                    f"bash $S; R=$?; rm -f $S; exit $R")
-        proc = subprocess.run(
-            self._ssh_argv() + [wrapper],
-            input=stdin_bytes if stdin_bytes is not None else b"",
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            timeout=timeout or self.timeout,
-        )
+        try:
+            proc = subprocess.run(
+                self._ssh_argv() + [wrapper],
+                input=stdin_bytes if stdin_bytes is not None else b"",
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                timeout=timeout or self.timeout,
+            )
+        except subprocess.TimeoutExpired:
+            # Not an OSError, so uncaught it would skip the caller's attempt
+            # counter and retry against the live site every poll, forever.
+            raise WordPressError(
+                f"ssh command timed out after {timeout or self.timeout}s "
+                f"(it may still have finished on the server)")
         if proc.returncode != 0:
             err = proc.stderr.decode("utf-8", "replace").strip() or \
                   proc.stdout.decode("utf-8", "replace").strip()
@@ -301,107 +458,59 @@ class WordPressPublisher:
 
     # ---- Writing -----------------------------------------------------------
 
-    def upload_media(self, local_path, post_id=None, title=None):
-        """Stream the file to the install and import it into the media library.
+    def publish(self, post_id, m4a_path, extra_fields=None, media_title=None, source=""):
+        """Upload the audio and point the post's fields at it — one SSH
+        connection, one WordPress bootstrap (see _PUBLISH_PHP).
 
-        The transfer and the import happen in ONE ssh connection. WP Engine's
-        gateway does not guarantee that a file written to /tmp by one
-        connection is visible to the next, so uploading and importing
-        separately can hand `wp media import` a path that no longer exists.
-        Doing both in one session also saves two wp-cli bootstraps, which are
-        ~30s each on this host.
+        One connection because WP Engine gives every connection its own
+        container: a file streamed to /tmp in one is not there in the next.
+        One bootstrap because each costs ~30s here. The audio travels on the
+        SSH stdin, so PHP's upload_max_filesize (2M on this host) never
+        applies.
 
-        Sent over SSH rather than uploaded through WordPress, so PHP's
-        upload_max_filesize never enters into it."""
-        # Uniqueness goes in the DIRECTORY, not the filename: WordPress keeps
-        # the basename for the media library entry and the public URL, so a
-        # "tts-upload-$$-" prefix would end up in the audio's address.
-        # The path is referenced as "$F" rather than passed through _shquote:
-        # single quotes would stop $$ expanding, and the import would then be
-        # handed a filename that differs from the one just written.
-        args = ["--porcelain"]
-        if post_id:
-            args.append(f"--post_id={post_id}")
-        if title:
-            args.append(f"--title={title}")
-        prefix = f"cd {_shquote(self.wp_path)} && " if self.wp_path else ""
-        # `cat` drains stdin first, so the later lines run with stdin at EOF.
-        # pipefail keeps a wp-cli failure from being hidden by sed's success;
-        # the prefix separates the id from any notices wp prints alongside it.
-        script = (
-            f'set -o pipefail\n'
-            f'D="/tmp/tts-upload-$$"\n'
-            f'mkdir -p "$D"\n'
-            f'F="$D/"{_shquote(os.path.basename(local_path))}\n'
-            f'cat > "$F"\n'
-            f'trap \'rm -rf "$D"\' EXIT\n'
-            f'{prefix}wp media import "$F" {" ".join(_shquote(a) for a in args)} '
-            f'| sed -e "s/^/{_ID_PREFIX}/"\n'
-        )
-        with open(local_path, "rb") as f:
-            out = self._run(script, stdin_bytes=f.read())
-        ids = [line[len(_ID_PREFIX):].strip() for line in out.splitlines()
-               if line.startswith(_ID_PREFIX)]
-        ids = [i for i in ids if i.isdigit()]
-        if not ids:
-            raise WordPressError(
-                f"media import returned no attachment id: {out.strip()[:300]}")
-        return int(ids[-1])
-
-    def attachment_url(self, attachment_id):
-        return self._wp(["post", "get", str(attachment_id), "--field=guid"], timeout=60).strip()
-
-    def set_fields(self, post_id, fields):
-        """Set ACF fields through ACF's own API. Keys may be names or field keys."""
-        payload = base64.b64encode(json.dumps({
-            "post_id": post_id,
-            "fields": fields,
-            "dry_run": self.dry_run,
-        }).encode()).decode()
-        out = self._wp(["eval-file", "-", payload],
-                       stdin_bytes=_APPLY_PHP.encode(), timeout=300)
-        result = self._fenced_json(out)
-        if not result.get("ok"):
-            raise WordPressError(result.get("error") or "update_field failed")
-        return result
-
-    def flush_cache(self):
-        """WP Engine serves the old page until its cache is cleared."""
-        try:
-            self._wp(["page-cache", "flush"], timeout=120)
-            return True
-        except WordPressError as e:
-            self._log(f"Cache flush failed ({e}) — the post is updated, but the "
-                      f"public page may serve a stale copy for a while.", "warn")
-            return False
-
-    # ---- The whole job -----------------------------------------------------
-
-    def publish(self, post_id, m4a_path, extra_fields=None, media_title=None):
-        """Upload the audio and point the post's fields at it.
-
-        Returns the helper's result dict (permalink, edit link, before/after
-        for each field written)."""
+        `source` (the doc id) tags the attachment so a retry after a timeout
+        reuses it. Returns the helper's result dict: permalink, edit link,
+        before/after for each field written, attachment id."""
         audio_field = (self.cfg.get("audio_field") or "").strip()
         if not audio_field:
             raise WordPressError("wordpress.audio_field is not set — nothing to write the audio into")
 
+        filename = os.path.basename(m4a_path)
+        payload = base64.b64encode(json.dumps({
+            "post_id": int(post_id),
+            "audio_field": audio_field,
+            "audio_format": self.cfg.get("audio_field_format") or "attachment_id",
+            "fields": extra_fields or {},
+            "filename": filename,
+            "title": media_title or os.path.splitext(filename)[0],
+            "source": str(source or ""),
+            "dry_run": self.dry_run,
+            "purge_cache": bool(self.cfg.get("flush_cache", True)),
+        }).encode()).decode()
+        php = base64.b64encode(_PUBLISH_PHP.encode()).decode()
+        prefix = f"cd {_shquote(self.wp_path)} && " if self.wp_path else ""
+        # The paths are referenced as "$F"/"$P" rather than _shquote()d, so the
+        # mktemp result is what's used; the filename itself is quoted. `cat`
+        # drains stdin (the audio) before wp starts.
+        script = (
+            "set -euo pipefail\n"
+            'D=$(mktemp -d /tmp/tts-publish-XXXXXX)\n'
+            "trap 'rm -rf \"$D\"' EXIT\n"
+            f'F="$D/"{_shquote(filename)}\n'
+            'P="$D/publish.php"\n'
+            'cat > "$F"\n'
+            f'echo {php} | base64 -d > "$P"\n'
+            f'{prefix}wp eval-file "$P" {payload} "$F"\n'
+        )
         if self.dry_run:
-            self._log(f"[dry run] would upload {os.path.basename(m4a_path)} and set "
-                      f"{audio_field} on post {post_id}.")
-            attachment_id, audio_value = 0, "(dry run)"
+            self._log(f"[dry run] would upload {filename} and set {audio_field} on post {post_id}.")
+            audio = b""
         else:
-            attachment_id = self.upload_media(m4a_path, post_id=post_id, title=media_title)
-            audio_value = attachment_id
-            if (self.cfg.get("audio_field_format") or "attachment_id") == "url":
-                audio_value = self.attachment_url(attachment_id)
-
-        fields = {audio_field: audio_value}
-        fields.update(extra_fields or {})
-        result = self.set_fields(post_id, fields)
-        result["attachment_id"] = attachment_id
-        if not self.dry_run and self.cfg.get("flush_cache", True):
-            self.flush_cache()
+            with open(m4a_path, "rb") as f:
+                audio = f.read()
+        result = self._fenced_json(self._run(script, stdin_bytes=audio))
+        if not result.get("ok"):
+            raise WordPressError(result.get("error") or "publish failed")
         return result
 
 

@@ -34,10 +34,11 @@ class FakePublisher:
         return WordPressPublisher.match_title(
             types.SimpleNamespace(), title, limit=limit, posts=self.posts)
 
-    def publish(self, post_id, m4a_path, extra_fields=None, media_title=None):
+    def publish(self, post_id, m4a_path, extra_fields=None, media_title=None, source=""):
         if self.fail_publish:
             raise WordPressError("ACF is not active on this install")
         self.published.append((post_id, extra_fields, open(m4a_path, "rb").read()))
+        self.sources = getattr(self, "sources", []) + [source]
         return {
             "ok": True, "post_title": "Faith Over Fear", "post_status": "publish",
             "permalink": f"https://example.com/?p={post_id}",
@@ -99,6 +100,7 @@ check("status", info["wp_status"], "published")
 check("post id", info["wp_post_id"], 11)
 check("audio uploaded", w._wp_pub.published[0][2], b"FAKE-M4A-BYTES")
 check("chapters field sent", w._wp_pub.published[0][1], {})
+check("upload tagged with the project", w._wp_pub.sources, ["proj-1"])
 check("confirmation emailed", len(w.sent), 1)
 
 print("\n--- smart quotes and dashes still match ---")
@@ -280,6 +282,54 @@ stranger = gmail_message("r2", "Someone Else <nope@example.com>",
 doc_watcher.requests.get = lambda url, **kw: thread_response([ASK, stranger])
 w._check_reply(info)
 check("a stranger still can't name the post", info.get("wp_post_id"), None)
+
+print("\n--- an ssh timeout counts as an attempt ---")
+import subprocess
+import wp_publisher
+real_run = wp_publisher.subprocess.run
+def hang(*a, **kw):
+    raise subprocess.TimeoutExpired(cmd="ssh", timeout=kw.get("timeout"))
+wp_publisher.subprocess.run = hang
+pub = WordPressPublisher({"ssh_host": "x@example.com", "audio_field": "audio_file"})
+try:
+    pub._run("true", timeout=1)
+    got = "no error"
+except WordPressError as e:
+    got = "WordPressError"
+wp_publisher.subprocess.run = real_run
+check("timeout is a WordPressError", got, "WordPressError")
+
+print("\n--- publish is one connection carrying the audio ---")
+calls = []
+def fake_run(self, script, stdin_bytes=None, timeout=None):
+    calls.append((script, stdin_bytes))
+    return 'notice\n<<<TTSJSON>>>{"ok": true, "attachment_id": 7}<<<TTSEND>>>\n'
+import tempfile, os
+tmp = tempfile.mkdtemp()
+path = os.path.join(tmp, "dare-to-hope.m4a")
+open(path, "wb").write(b"AUDIO")
+pub = WordPressPublisher({"ssh_host": "x@example.com", "audio_field": "audio_file",
+                          "wp_path": "/sites/x"})
+pub._run = types.MethodType(fake_run, pub)
+res = pub.publish(11, path, extra_fields={"chapters": "[]"}, source="proj-1")
+check("one ssh call", len(calls), 1)
+check("audio on stdin", calls[0][1], b"AUDIO")
+check("file keeps its name", "'dare-to-hope.m4a'" in calls[0][0], True)
+check("result parsed past notices", res["attachment_id"], 7)
+check("PHP slashes before writing", "wp_slash( $value )" in wp_publisher._PUBLISH_PHP, True)
+calls.clear()
+pub.dry_run = True
+pub.publish(11, path, source="proj-1")
+check("dry run sends no audio", calls[0][1], b"")
+def fail_run(self, script, stdin_bytes=None, timeout=None):
+    return '<<<TTSJSON>>>{"ok": false, "error": "field x missing"}<<<TTSEND>>>'
+pub._run = types.MethodType(fail_run, pub)
+try:
+    pub.publish(11, path)
+    got = None
+except WordPressError as e:
+    got = str(e)
+check("PHP error surfaces", got, "field x missing")
 
 print(f"\n{len(PASS)} passed, {len(FAIL)} failed")
 sys.exit(1 if FAIL else 0)
