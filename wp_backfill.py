@@ -187,6 +187,36 @@ def post_markdown(title, content, stop_at_headings=(), skip_sections=()):
     return "\n\n".join([f"# {title}"] + parser.lines)
 
 
+# ---- The app ----------------------------------------------------------------
+
+def app_busy(app_url, headers):
+    """True while any project is queued or generating — a Google Doc, the
+    backfill, or someone using the app. Projects are listed newest-first, so
+    an active one is near the top. Also used by restart_app_if_idle.py."""
+    def get(path):
+        r = requests.get(f"{app_url}{path}", headers=headers, timeout=60)
+        r.raise_for_status()
+        return r.json()
+    for p in get("/api/projects")[:8]:
+        if str(get(f"/api/projects/{p['id']}").get("import_status") or "") in ("pending", "generating"):
+            return True
+    return False
+
+
+def restart_app(command, app_url, headers):
+    """Run the restart command, then wait (up to ~2 min) for the app to answer.
+    Raises OSError/SubprocessError if the command itself fails."""
+    argv = shlex.split(command) if isinstance(command, str) else list(command)
+    subprocess.run(argv, check=True, capture_output=True, timeout=60)
+    for _ in range(60):
+        time.sleep(2)
+        try:
+            requests.get(f"{app_url}/api/health", headers=headers, timeout=5)
+            return
+        except requests.RequestException:
+            continue
+
+
 # ---- The queue --------------------------------------------------------------
 
 def save_state(state):
@@ -225,14 +255,7 @@ class Backfill:
         return r.json()
 
     def app_busy(self):
-        """True while any project is queued or generating — a Google Doc, or
-        someone using the app. Projects are listed newest-first, so an active
-        one is near the top."""
-        for p in self._app("/api/projects")[:8]:
-            status = str(self._app(f"/api/projects/{p['id']}").get("import_status") or "")
-            if status in ("pending", "generating"):
-                return True
-        return False
+        return app_busy(self.watcher.app_url, self.watcher._app_headers())
 
     def restart_due(self):
         every = int(self.cfg.get("restart_app_every", 0))
@@ -246,20 +269,11 @@ class Backfill:
             log("restart_app_every is set but restart_app_command isn't — not restarting.", "warn")
             self.state["since_restart"] = 0
             return save_state(self.state)
-        argv = shlex.split(command) if isinstance(command, str) else list(command)
         try:
-            subprocess.run(argv, check=True, capture_output=True, timeout=60)
+            restart_app(command, self.watcher.app_url, self.watcher._app_headers())
         except (OSError, subprocess.SubprocessError) as e:
             log(f"Couldn't restart the app ({e}) — carrying on without.", "warn")
         else:
-            for _ in range(60):
-                time.sleep(2)
-                try:
-                    requests.get(f"{self.watcher.app_url}/api/health",
-                                 headers=self.watcher._app_headers(), timeout=5)
-                    break
-                except requests.RequestException:
-                    continue
             log("Restarted the app to release the memory generation holds on to.")
         self.state["since_restart"] = 0
         save_state(self.state)

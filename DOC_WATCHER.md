@@ -504,6 +504,23 @@ Stop it with `launchctl bootout gui/$(id -u)/com.localtts.backfill`, or set
 `"enabled": false` and restart it — a disabled backfill exits cleanly and the
 plist (`KeepAlive` → `SuccessfulExit: false`) leaves it stopped.
 
+## Memory: restarts, and why they're safe
+
+The app's memory grows with every generation — below anything it frees
+itself — so it is restarted regularly, always only when nothing is queued or
+generating:
+
+- **between backfill posts** (`backfill.restart_app_every`), and
+- **nightly at 03:30** by `restart_app_if_idle.py` (launchd
+  `com.localtts.nightly-restart`, config block `nightly_restart`). If the app
+  is busy it re-checks every 10 minutes and skips the night after
+  `give_up_after_minutes`.
+
+If a restart ever does land mid-import — or a deploy or a reboot does — the
+app **resumes** that import on its first request afterwards, from the
+paragraph it stopped at. Only imports touched in the last 24 hours are
+resumed; an older one is logged and left alone.
+
 ## Day-to-day use
 
 - **Share a doc** with the service-account email (Viewer is enough) → within
