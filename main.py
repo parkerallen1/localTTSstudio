@@ -1473,6 +1473,61 @@ async def _run_import_generation(project_id: str, port: int):
         level = "ok" if failures == 0 else "warn"
         emit_log(f"Import \"{project['name']}\" complete — {total - failures}/{total} paragraphs generated.", level)
 
+# ─── Resuming imports a restart cut off ───────────────────────────────────────
+# The import job lives in this process, so a restart (a deploy, the backfill's
+# memory recycling, the nightly restart, a reboot) kills it mid-project and
+# leaves the project marked "generating" forever — and anything waiting on it
+# (the Docs watcher, the backfill) waits forever too. The job already skips
+# paragraphs that have audio, so resuming is just running it again.
+#
+# Done on the first request rather than at startup: the job calls this
+# server's own /api/generate, and only a request knows which port that is
+# (the mini runs `uvicorn --port 8002` without QWEN_TTS_PORT).
+# Only recent interruptions are resumed: finishing a months-old abandoned
+# import would make the watcher deliver audio nobody is expecting any more.
+RESUME_MAX_AGE_HOURS = 24
+_resume_checked = False
+
+def _interrupted_imports():
+    """Projects left "pending"/"generating" and touched within the window."""
+    found = []
+    if not os.path.isdir(PROJECTS_DIR):
+        return found
+    cutoff = datetime.now(timezone.utc).timestamp() - RESUME_MAX_AGE_HOURS * 3600
+    for entry in os.scandir(PROJECTS_DIR):
+        if not entry.is_dir():
+            continue
+        try:
+            project = _load_project(entry.name)
+        except (json.JSONDecodeError, KeyError, TypeError, HTTPException):
+            continue
+        if not project or project.get("import_status") not in ("pending", "generating"):
+            continue
+        try:
+            touched = datetime.fromisoformat(project.get("updated_at") or "").timestamp()
+        except ValueError:
+            touched = 0
+        found.append((touched >= cutoff, project.get("created_at") or "", project["id"], project.get("name")))
+    return sorted(found, key=lambda f: f[1])
+
+@app.middleware("http")
+async def _resume_interrupted_imports(request: Request, call_next):
+    global _resume_checked
+    if not _resume_checked:
+        _resume_checked = True
+        port = (request.scope.get("server") or (None, SELF_PORT))[1] or SELF_PORT
+        try:
+            for recent, _, project_id, name in _interrupted_imports():
+                if recent:
+                    emit_log(f"Resuming the import of \"{name}\" a restart interrupted.", "warn")
+                    asyncio.create_task(_run_import_generation(project_id, port))
+                else:
+                    emit_log(f"\"{name}\" was left mid-import more than "
+                             f"{RESUME_MAX_AGE_HOURS}h ago — not resuming it.", "info")
+        except Exception as e:
+            emit_log(f"Couldn't check for interrupted imports: {e}", "warn")
+    return await call_next(request)
+
 @app.post("/api/projects/import")
 async def import_project(request: Request):
     """Create a project from raw text and (optionally) generate all audio.
