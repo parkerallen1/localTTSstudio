@@ -18,6 +18,7 @@ CHAPTER_EXCLUDE = {
     'settle in',
     'thought starter',
     'reflection questions',
+    'questions for reflection',
     'humor break',
     'bring the inspiration with you',
 }
