@@ -1374,6 +1374,11 @@ async def create_project(request: Request):
 # UI like any other, with each paragraph's audio saved as take 1.
 
 _import_lock: Optional[asyncio.Lock] = None  # serializes background import jobs
+# Import jobs started but not finished (running, or queued on _import_lock).
+# The live answer to "is anything generating?" — a project's saved
+# import_status can't be trusted for that: a job killed by a restart leaves it
+# saying "generating" forever.
+_imports_in_flight = 0
 SELF_PORT = int(os.environ.get("QWEN_TTS_PORT", "8001"))
 
 def _store_wav_as_flac(project_id: str, file_id: str, wav_bytes: bytes):
@@ -1399,10 +1404,17 @@ async def _run_import_generation(project_id: str, port: int):
     """Background job: generate audio for every paragraph of an imported
     project, sequentially, via this server's own /api/generate endpoint (which
     owns model loading, the MPS lock, and remote forwarding)."""
-    global _import_lock
+    global _import_lock, _imports_in_flight
     if _import_lock is None:
         _import_lock = asyncio.Lock()
 
+    _imports_in_flight += 1
+    try:
+        await _run_import_generation_locked(project_id, port)
+    finally:
+        _imports_in_flight -= 1
+
+async def _run_import_generation_locked(project_id: str, port: int):
     async with _import_lock:
         project = _load_project(project_id)
         if not project:
@@ -1472,6 +1484,15 @@ async def _run_import_generation(project_id: str, port: int):
         _set_import_status(project_id, status)
         level = "ok" if failures == 0 else "warn"
         emit_log(f"Import \"{project['name']}\" complete — {total - failures}/{total} paragraphs generated.", level)
+
+@app.get("/api/busy")
+def get_busy():
+    """Whether this process is generating right now, or has imports queued —
+    what the backfill and the nightly restart check before restarting the
+    app or starting more work."""
+    generating = bool(generation_lock is not None and generation_lock.locked())
+    return {"busy": generating or _imports_in_flight > 0,
+            "generating": generating, "imports": _imports_in_flight}
 
 # ─── Resuming imports a restart cut off ───────────────────────────────────────
 # The import job lives in this process, so a restart (a deploy, the backfill's

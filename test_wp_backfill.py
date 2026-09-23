@@ -250,5 +250,29 @@ restarts.clear(); bf2.poll()
 check("never restarts while something is generating", restarts, [])
 wp_backfill.subprocess.run = real_run
 
+print("\n--- busy comes from the app's live state ---")
+def resp(status, payload):
+    import requests as _rq
+    r = types.SimpleNamespace(status_code=status, json=lambda: payload)
+    def rfs():
+        if status >= 400:
+            raise _rq.HTTPError(response=r)
+    r.raise_for_status = rfs
+    return r
+calls = []
+def live_get(url, **kw):
+    calls.append(url)
+    return resp(200, {"busy": False, "generating": False, "imports": 0})
+wp_backfill.requests.get = live_get
+check("asks /api/busy", (wp_backfill.app_busy("http://app", {}), calls), (False, ["http://app/api/busy"]))
+def old_app_get(url, **kw):
+    if url.endswith("/api/busy"):
+        return resp(404, {})
+    if url.endswith("/api/projects"):
+        return resp(200, [{"id": "a"}])
+    return resp(200, {"import_status": "generating"})
+wp_backfill.requests.get = old_app_get
+check("falls back to project status on an older app", wp_backfill.app_busy("http://app", {}), True)
+
 print(f"\n{len(PASS)} passed, {len(FAIL)} failed")
 sys.exit(1 if FAIL else 0)

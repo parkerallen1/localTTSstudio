@@ -190,13 +190,23 @@ def post_markdown(title, content, stop_at_headings=(), skip_sections=()):
 # ---- The app ----------------------------------------------------------------
 
 def app_busy(app_url, headers):
-    """True while any project is queued or generating — a Google Doc, the
-    backfill, or someone using the app. Projects are listed newest-first, so
-    an active one is near the top. Also used by restart_app_if_idle.py."""
+    """True while the app is generating or has imports queued — a Google Doc,
+    the backfill, or someone using the app. Also used by
+    restart_app_if_idle.py.
+
+    Asks the app (/api/busy) rather than reading projects' saved
+    import_status: a job a restart killed leaves its project saying
+    "generating" forever, which would read as busy forever. The project scan
+    is only the fallback for an app too old to have /api/busy."""
     def get(path):
         r = requests.get(f"{app_url}{path}", headers=headers, timeout=60)
         r.raise_for_status()
         return r.json()
+    try:
+        return bool(get("/api/busy")["busy"])
+    except requests.HTTPError as e:
+        if e.response is None or e.response.status_code != 404:
+            raise
     for p in get("/api/projects")[:8]:
         if str(get(f"/api/projects/{p['id']}").get("import_status") or "") in ("pending", "generating"):
             return True
