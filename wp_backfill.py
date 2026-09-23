@@ -31,8 +31,17 @@ supplies the SSH and field settings):
       "limit": 3,
       "stop_at_headings": ["Next step"],  // narration ends at the first heading
                                           // starting with one of these
-      "skip_sections": ["View all studies"]  // these sections are left out;
-    }                                        // narration resumes at the next heading
+      "skip_sections": ["View all studies"], // these sections are left out;
+                                             // narration resumes at the next heading
+      "restart_app_every": 1,                // restart the app after this many posts
+      "restart_app_command": "launchctl kickstart -k gui/501/com.localtts.server"
+    }
+
+Why restart the app: its memory grows with every generation (it reached an
+84 GB footprint, mostly swap, after 25 posts on a 16 GB mini) even though it
+empties the GPU cache after each paragraph. A restart between posts — only
+when nothing is generating — keeps it flat, for one model reload (~30s) per
+~35-minute post.
 
 Run:  python wp_backfill.py            (loop; launchd keeps it running)
       python wp_backfill.py --status   (what's done, skipped, failed)
@@ -42,7 +51,9 @@ import argparse
 import json
 import os
 import re
+import shlex
 import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -223,6 +234,36 @@ class Backfill:
                 return True
         return False
 
+    def restart_due(self):
+        every = int(self.cfg.get("restart_app_every", 0))
+        return every > 0 and int(self.state.get("since_restart", 0)) >= every
+
+    def restart_app(self):
+        """Restart the app while it's idle (poll() checked), then wait for it
+        to answer before the next post is imported."""
+        command = self.cfg.get("restart_app_command")
+        if not command:
+            log("restart_app_every is set but restart_app_command isn't — not restarting.", "warn")
+            self.state["since_restart"] = 0
+            return save_state(self.state)
+        argv = shlex.split(command) if isinstance(command, str) else list(command)
+        try:
+            subprocess.run(argv, check=True, capture_output=True, timeout=60)
+        except (OSError, subprocess.SubprocessError) as e:
+            log(f"Couldn't restart the app ({e}) — carrying on without.", "warn")
+        else:
+            for _ in range(60):
+                time.sleep(2)
+                try:
+                    requests.get(f"{self.watcher.app_url}/api/health",
+                                 headers=self.watcher._app_headers(), timeout=5)
+                    break
+                except requests.RequestException:
+                    continue
+            log("Restarted the app to release the memory generation holds on to.")
+        self.state["since_restart"] = 0
+        save_state(self.state)
+
     def next_candidate(self):
         now = time.time()
         if self._candidates is None or now - self._candidates_at > CANDIDATE_TTL:
@@ -262,6 +303,8 @@ class Backfill:
             return
         if self.app_busy():
             return
+        if self.restart_due():
+            return self.restart_app()
         post = self.next_candidate()
         if not post:
             if not self._said_limit:
@@ -364,6 +407,7 @@ class Backfill:
                 shutil.rmtree(tmpdir, ignore_errors=True)
         _append_publish_log(info, post_id, result, matched_by="backfill")
         entry["attachment_id"] = result.get("attachment_id")
+        self.state["since_restart"] = int(self.state.get("since_restart", 0)) + 1
         self._finish(post_id, "published")
         log(f"Attached narration for \"{title}\" — {result.get('permalink')} "
             f"({self.published_count()} of {self.limit}).", "ok")

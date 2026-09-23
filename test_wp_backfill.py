@@ -228,5 +228,27 @@ for _ in range(wp_backfill.MAX_ATTEMPTS):
 check("read failures retry, then give up", (calls["n"], bf.state["posts"]["1"]["status"]),
       (wp_backfill.MAX_ATTEMPTS, "failed"))
 
+print("\n--- the app is restarted between posts ---")
+bf = make(limit=5)
+bf.cfg.update(restart_app_every=1, restart_app_command="true")
+restarts = []
+real_run = wp_backfill.subprocess.run
+wp_backfill.subprocess.run = lambda argv, **kw: restarts.append(argv)
+wp_backfill.time.sleep = lambda s: None
+wp_backfill.requests.get = lambda *a, **k: types.SimpleNamespace(status_code=200)
+bf.poll(); bf.poll()                    # start post 1, publish it
+check("no restart before the first post", restarts, [])
+bf.poll()                               # restart instead of starting post 2
+check("restarts after a published post", restarts, [["true"]])
+check("nothing started on the restart poll", bf.state["current"], None)
+bf.poll()
+check("then carries on with the next post", bf.state["posts"].get("2", {}).get("status"), "skipped")
+bf2 = make(limit=5, busy=True)
+bf2.cfg.update(restart_app_every=1, restart_app_command="true")
+bf2.state["since_restart"] = 1
+restarts.clear(); bf2.poll()
+check("never restarts while something is generating", restarts, [])
+wp_backfill.subprocess.run = real_run
+
 print(f"\n{len(PASS)} passed, {len(FAIL)} failed")
 sys.exit(1 if FAIL else 0)
