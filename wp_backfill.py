@@ -29,8 +29,10 @@ supplies the SSH and field settings):
       "enabled": true,
       "categories": ["Devotionals", "Quick Quiet Times"],
       "limit": 3,
-      "stop_at_headings": ["Next step"]   // narration ends at the first heading
-    }                                     // starting with one of these
+      "stop_at_headings": ["Next step"],  // narration ends at the first heading
+                                          // starting with one of these
+      "skip_sections": ["View all studies"]  // these sections are left out;
+    }                                        // narration resumes at the next heading
 
 Run:  python wp_backfill.py            (loop; launchd keeps it running)
       python wp_backfill.py --status   (what's done, skipped, failed)
@@ -88,11 +90,13 @@ _TEXT_TAGS = {"p", "li", "cite", "h1", "h2", "h3", "h4", "h5", "h6", "dt", "dd"}
 
 
 class _Narration(HTMLParser):
-    def __init__(self, stop_prefixes):
+    def __init__(self, stop_prefixes, skip_prefixes=()):
         super().__init__(convert_charrefs=True)
         self.lines = []
         self.stop_prefixes = [p.casefold() for p in stop_prefixes]
+        self.skip_prefixes = [p.casefold() for p in skip_prefixes]
         self.stopped = False
+        self._skipping_level = None   # inside a skipped section under this heading level
         self._skip = 0          # depth inside a tag we don't read
         self._stack = []        # open text tags
         self._buf = []
@@ -104,11 +108,22 @@ class _Narration(HTMLParser):
             return
         tag = self._stack[-1]
         if tag[0] == "h" and tag[1:].isdigit():
-            if any(text.casefold().startswith(p) for p in self.stop_prefixes):
+            level, key = int(tag[1:]), text.casefold()
+            if self._skipping_level is not None and level <= self._skipping_level:
+                self._skipping_level = None       # the skipped section has ended
+            if any(key.startswith(p) for p in self.stop_prefixes):
                 self.stopped = True     # e.g. "Next steps": links, not narration
                 return
-            self.lines.append("#" * int(tag[1:]) + " " + text)
-        elif tag == "li":
+            if any(key.startswith(p) for p in self.skip_prefixes):
+                self._skipping_level = level      # e.g. a series' table of links
+                return
+            if self._skipping_level is not None:
+                return
+            self.lines.append("#" * level + " " + text)
+            return
+        if self._skipping_level is not None:
+            return
+        if tag == "li":
             self.lines.append("- " + text)
         else:
             self.lines.append(text)
@@ -143,7 +158,7 @@ class _Narration(HTMLParser):
             self._buf.append(data)
 
 
-def post_markdown(title, content, stop_at_headings=()):
+def post_markdown(title, content, stop_at_headings=(), skip_sections=()):
     """A post's block HTML as the Markdown the importer takes: "# Title" first
     (the parser's title line), then one line per paragraph, heading (h2 = a
     chapter), list item or quote citation."""
@@ -154,7 +169,7 @@ def post_markdown(title, content, stop_at_headings=()):
             break
         html = stripped
     html = _SHORTCODE_RE.sub("", html)
-    parser = _Narration(stop_at_headings)
+    parser = _Narration(stop_at_headings, skip_sections)
     parser.feed(html)
     parser.close()
     parser._flush()
@@ -266,7 +281,8 @@ class Backfill:
         if post.get("own_audio"):
             return self._finish(post_id, "skipped", "has narration of its own now")
         markdown = post_markdown(post["post_title"], post["content"],
-                                 self.cfg.get("stop_at_headings") or ["Next step"])
+                                 self.cfg.get("stop_at_headings") or ["Next step"],
+                                 self.cfg.get("skip_sections") or [])
         words = len(markdown.split())
         if words < MIN_WORDS:
             log(f"\"{post['post_title']}\" is only {words} words once embeds are "
@@ -399,7 +415,8 @@ def main():
         bf = Backfill(config)
         post = bf.pub.post_for_narration(args.text)
         print(post_markdown(post["post_title"], post["content"],
-                            cfg.get("stop_at_headings") or ["Next step"]))
+                            cfg.get("stop_at_headings") or ["Next step"],
+                            cfg.get("skip_sections") or []))
         return
     if not cfg.get("enabled"):
         # A clean exit, so launchd (KeepAlive: SuccessfulExit false) leaves it

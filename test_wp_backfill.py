@@ -107,6 +107,13 @@ for gone in ("Listen to the podcast", "spotify", "A caption", "a boy",
              "A line repeated", "alert", "Custom embed", "Next steps", "Watch this video"):
     check(f"left out: {gone!r}", gone in md, False)
 
+SERIES = ("<h2>View all studies in the series</h2><ul><li>Introduction</li><li>Chapters 1-3</li></ul>"
+          "<h3>Sub part</h3><p>still skipped</p>"
+          "<h2>What John says</h2><p>Real reading.</p>")
+got = post_markdown("T", SERIES, ["Next step"], ["View all studies"])
+check("skipped section left out, next h2 resumes", got, "# T\n\n## What John says\n\nReal reading.")
+check("skip list empty: section read",
+      "Chapters 1-3" in post_markdown("T", SERIES, ["Next step"], []), True)
 check("empty post is just the title", post_markdown("T", "", []), "# T")
 check("leftover shortcodes dropped",
       post_markdown("T", "<p>[fusion_text]Hello there[/fusion_text]</p>", []), "# T\n\nHello there")
