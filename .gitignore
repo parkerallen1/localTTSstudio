@@ -10,3 +10,4 @@ __pycache__/
 data/projects/
 data/settings.json
 *.bak
+venv-mlx/

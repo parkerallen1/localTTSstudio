@@ -75,6 +75,7 @@ import requests
 import subprocess
 import time as _time
 import text_parser
+import mlx_engine
 from collections import deque
 
 APP_VERSION = "3.8.8" # Current application version
@@ -543,9 +544,13 @@ async def lifespan(app: FastAPI):
 
     # ── Auto-preload preferred model if configured ────────────────────────────
     _settings = load_settings()
-    if _settings.get("auto_preload_on_start", False):
-        _pref_size = _settings.get("preferred_model_size", "0.6B")
-        _pref_type = _settings.get("preferred_model_type", "CustomVoice")
+    if mlx_engine.enabled():
+        emit_log(f"Generation engine: MLX 8-bit where available ({mlx_engine.MLX_PYTHON}); "
+                 f"PyTorch otherwise.", "info")
+    _pref_size = _settings.get("preferred_model_size", "0.6B")
+    _pref_type = _settings.get("preferred_model_type", "CustomVoice")
+    # A preloaded PyTorch model would sit unused (~5 GB) when MLX serves it.
+    if _settings.get("auto_preload_on_start", False) and not mlx_engine.model_for(_pref_size, _pref_type):
         _pref_id = f"Qwen/Qwen3-TTS-12Hz-{_pref_size}-{_pref_type}"
         emit_log(f"Auto-preloading preferred model in background: {_pref_id}", "info")
         asyncio.create_task(get_tts_model(_pref_size, _pref_type))
@@ -1926,6 +1931,16 @@ async def generate_audio(
             emit_log(f"Client gone before generation started — skipping \"{text_preview}\"", "warn")
             raise HTTPException(status_code=499, detail="Client disconnected")
 
+        # Apple Silicon with the MLX venv configured: generate there instead
+        # (mlx_engine.py). Same weights and sampling, 3.5x faster, and none of
+        # PyTorch's memory growth. A failure is reported, not retried on
+        # PyTorch — switching engines mid-article would be the worse surprise.
+        mlx_model = mlx_engine.model_for(model_size, model_type)
+        if mlx_model:
+            return await _generate_with_mlx(
+                mlx_model, text, language, model_type, speaker, instruct,
+                voice_design_prompt, ref_text, ref_audio, profile_id, temperature)
+
         # Model load/swap must happen under the generation lock: swapping frees
         # the current model, which would crash an inference running on it.
         try:
@@ -1939,7 +1954,7 @@ async def generate_audio(
         # roughly 3.5× the expected duration — enough for slow, pause-heavy
         # reads, but a generation that misses its end-of-speech token stops in
         # seconds instead of grinding to the 2048-token (~3 min audio) default.
-        max_new_tokens = min(2048, max(256, len(text) * 3))
+        max_new_tokens = _max_new_tokens(text)
 
         gen_t0 = _time.monotonic()
         try:
@@ -2052,6 +2067,65 @@ async def generate_audio(
                 torch.mps.empty_cache()
             elif torch.cuda.is_available():
                 torch.cuda.empty_cache()
+
+def _max_new_tokens(text):
+    """Cap decoding relative to the text length. The codec runs at ~12
+    tokens/sec of audio and speech is ~14 chars/sec, so len(text)*3 is roughly
+    3.5x the expected duration — enough for slow, pause-heavy reads, but a
+    generation that misses its end-of-speech token stops in seconds instead of
+    grinding on for minutes."""
+    return min(2048, max(256, len(text) * 3))
+
+
+async def _generate_with_mlx(model_id, text, language, model_type, speaker, instruct,
+                             voice_design_prompt, ref_text, ref_audio, profile_id, temperature):
+    """/api/generate through the MLX worker. Called under generation_lock."""
+    kwargs = {}
+    cleanup = None
+    if model_type == "CustomVoice":
+        kwargs = {"voice": speaker, "instruct": instruct or None}
+    elif model_type == "VoiceDesign":
+        if not voice_design_prompt:
+            raise HTTPException(status_code=400, detail="voice_design_prompt is required for VoiceDesign models.")
+        kwargs = {"instruct": voice_design_prompt}
+    elif model_type == "Base":
+        if profile_id:
+            profile = next((p for p in load_profiles() if p["id"] == profile_id), None)
+            if not profile:
+                emit_log(f"Profile {profile_id} not found.", "error")
+                raise HTTPException(status_code=404, detail="Profile not found")
+            kwargs = {"ref_audio": profile["audio_path"], "ref_text": profile["ref_text"]}
+        else:
+            if not ref_text or not ref_audio:
+                raise HTTPException(status_code=400, detail="ref_text and ref_audio (or profile_id) are required for Voice Cloning in Base models.")
+            safe_name = os.path.basename(ref_audio.filename) if ref_audio.filename else "upload.wav"
+            cleanup = os.path.join(DATA_DIR, f"{uuid.uuid4()}_{safe_name}")
+            os.makedirs(DATA_DIR, exist_ok=True)
+            with open(cleanup, "wb") as f:
+                f.write(await ref_audio.read())
+            kwargs = {"ref_audio": cleanup, "ref_text": ref_text}
+
+    emit_log(f"Starting {model_type} inference on MLX — {model_id.split('/')[-1]}", "info")
+    gen_t0 = _time.monotonic()
+    try:
+        wav_bytes, reply = await asyncio.to_thread(
+            mlx_engine.generate, model_id, text, language, temperature,
+            max_tokens=_max_new_tokens(text), **kwargs)
+    except mlx_engine.MLXError as e:
+        emit_log(f"Generation FAILED on MLX after {_time.monotonic() - gen_t0:.1f}s: {e}", "error")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if cleanup and os.path.exists(cleanup):
+            os.remove(cleanup)
+    emit_log(
+        f"Generation complete — {_time.monotonic() - gen_t0:.1f}s wall time, "
+        f"{reply.get('seconds', 0):.1f}s audio, {len(wav_bytes)/1024:.0f} KB, "
+        f"sr={reply.get('sample_rate')} (MLX)",
+        "ok"
+    )
+    return StreamingResponse(io.BytesIO(wav_bytes), media_type="audio/wav",
+                             headers={"Content-Disposition": "attachment; filename=generated.wav"})
+
 
 # Filter chains: loudness-normalize every treatment; warmth/clear add a
 # low/high shelf on top for coloration.

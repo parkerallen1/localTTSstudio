@@ -36,6 +36,7 @@ FLAC under the project → user downloads a merged WAV/M4A via `/api/merge` +
 | `static/script.js` | All frontend logic (parsing, generation, projects, export, settings). One big `DOMContentLoaded` closure. |
 | `static/style.css` | Dark glassmorphism theme. Shared tokens in `:root`. |
 | `static/publishes.html` | Standalone "Published" page (`/publishes`): what the doc watcher attached to WordPress, from `/api/wp_publishes`. |
+| `mlx_engine.py`, `mlx_worker.py` | MLX generation on Apple Silicon (8-bit Qwen3-TTS): the app side, and a worker process with its own venv (`requirements-mlx.txt` — mlx-audio's transformers pin conflicts with qwen-tts'). On when `QWEN_TTS_MLX_PYTHON` points at that venv's Python; otherwise PyTorch. |
 | `LocalTTSStudio.spec` | PyInstaller build spec for the `.app`. |
 | `text_parser.py` | Python port of the frontend's Markdown→paragraphs pipeline (keep in sync with `script.js`). Used by `/api/projects/import`. |
 | `doc_watcher.py` | Standalone Google Docs watcher: polls Drive for docs shared with a service account, imports them via `/api/projects/import`. Not bundled into the .app. |
@@ -60,6 +61,7 @@ Each source file also has a header comment explaining its role — start there.
 - **Models:** modes `Base` (voice cloning), `CustomVoice`, `VoiceDesign`; sizes
   `0.6B` / `1.7B`. One model is held at a time; the previous is freed on switch.
 - **Port:** the launcher serves on `127.0.0.1:8001`.
+- **Engine:** with `QWEN_TTS_MLX_PYTHON` set (the mini), generation runs on MLX 8-bit in `mlx_worker.py` — 1.66x real time vs PyTorch's 0.47x, flat memory. Without it (the desktop build), PyTorch/MPS.
 - **Remote generation:** if `settings.json` has `remote_server_url`,
   `/api/generate` is forwarded there (bearer-token auth) instead of loading a
   model locally. Setting `QWEN_TTS_SERVER_TOKEN` runs an instance in server
