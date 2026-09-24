@@ -217,16 +217,88 @@ for _ in range(4):
     bf.poll()
 check("stops at the limit", (bf.published_count(), bf.state["current"]), (1, None))
 
+print("\n--- failures are retried spaced out ---")
+clock = {"t": 1_000_000.0}
+wp_backfill._now = lambda: clock["t"]
+wp_backfill.time.time = lambda: clock["t"]
+
 bf = make()
+bf.pub.backfill_candidates = lambda cats: [{"ID": 1, "post_title": "Post 1"}]
 calls = {"n": 0}
 def flaky(pid):
     calls["n"] += 1
     raise WordPressError("ssh timed out")
 bf.pub.post_for_narration = flaky
-for _ in range(wp_backfill.MAX_ATTEMPTS):
+bf.poll()
+check("a read failure schedules a retry", (calls["n"], bf.state["posts"]["1"]["status"]), (1, "retry"))
+bf.poll(); bf.poll()
+check("not retried before the delay", calls["n"], 1)
+waits = []
+for delay in wp_backfill.RETRY_DELAYS:
+    waits.append((bf.state["posts"]["1"]["retry_at"] - clock["t"]) / 60)
+    clock["t"] += delay * 60
     bf.poll()
-check("read failures retry, then give up", (calls["n"], bf.state["posts"]["1"]["status"]),
+check("waits 5, 15, then 45 minutes", waits, [5, 15, 45])
+check("then gives up", (calls["n"], bf.state["posts"]["1"]["status"]),
       (wp_backfill.MAX_ATTEMPTS, "failed"))
+
+bf = make()
+bf.pub.backfill_candidates = lambda cats: [{"ID": i, "post_title": f"Post {i}"} for i in (1, 2)]
+real_read = bf.pub.post_for_narration
+bf.pub.post_for_narration = lambda pid: flaky(pid) if pid == 1 else real_read(pid)
+bf.poll(); bf.poll()
+check("a post waiting to retry doesn't hold up the next", bf.state["posts"]["2"]["status"], "skipped")
+
+print("\n--- a failed upload is parked, not redone ---")
+bf = make(limit=10)
+fails = {"left": 2}
+real_publish = bf.pub.publish
+def flaky_publish(post_id, *a, **k):
+    if post_id == 1 and fails["left"]:
+        fails["left"] -= 1
+        raise WordPressError("ssh command failed (255): Connection reset by peer")
+    return real_publish(post_id, *a, **k)
+bf.pub.publish = flaky_publish
+bf.poll(); bf.poll()                    # narrate post 1; its upload fails
+e1 = bf.state["posts"]["1"]
+check("upload failure: pending, not failed", e1["status"], "upload_pending")
+check("frees the queue for the next post", bf.state["current"], None)
+check("first upload retry in 5 min", (e1["retry_at"] - clock["t"]) / 60, 5)
+bf.poll()                               # post 2 (own audio) — not yet time for post 1
+check("carries on with the next post", bf.state["posts"]["2"]["status"], "skipped")
+check("upload not retried early", fails["left"], 1)
+clock["t"] += 5 * 60
+bf.poll()                               # retry due: fails again, next in 15
+check("second upload retry in 15 min", (e1["retry_at"] - clock["t"]) / 60, 15)
+bf.busy = True
+bf.app_busy = lambda: True
+clock["t"] += 15 * 60
+bf.poll()
+check("no upload retry while the app is busy", e1["status"], "upload_pending")
+bf.app_busy = lambda: False
+bf.poll()
+check("uploaded on the retry", e1["status"], "published")
+check("narrated once, never re-imported", [i["source"]["post_id"] for i in bf.imports], [1])
+check("published from the original project", bf.pub.published[0], (1, True, "proj-1"))
+check("retry_at cleared", "retry_at" in e1, False)
+
+bf = make()
+bf.pub.backfill_candidates = lambda cats: [{"ID": 1, "post_title": "Post 1"}]
+def always_fail(*a, **k):
+    raise WordPressError("down")
+bf.pub.publish = always_fail
+bf.poll(); bf.poll()
+for delay in wp_backfill.UPLOAD_RETRY_DELAYS:
+    clock["t"] += delay * 60
+    bf.poll()
+check("gives up on an upload after ~15 hours of tries",
+      (bf.state["posts"]["1"]["status"], bf.state["posts"]["1"]["upload_attempts"]),
+      ("failed", len(wp_backfill.UPLOAD_RETRY_DELAYS) + 1))
+
+bf = make()
+bf.state["posts"]["7"] = {"status": "upload_pending", "retry_at": 0, "project_id": "proj-7", "title": "Post 7"}
+bf.poll()
+check("an upload pending from before a restart is picked up", bf.state["posts"]["7"]["status"], "published")
 
 print("\n--- the app is restarted between posts ---")
 bf = make(limit=5)

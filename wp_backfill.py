@@ -43,6 +43,14 @@ empties the GPU cache after each paragraph. A restart between posts — only
 when nothing is generating — keeps it flat, for one model reload (~30s) per
 ~35-minute post.
 
+Retries: WP Engine's SSH host drops out for half an hour at a time (it did
+2026-09-23 22:10-22:40), so failures are retried spaced out, and the backfill
+works on other posts in between rather than waiting:
+  - reading or importing a post: after 5, 15 and 45 minutes, then "failed";
+  - uploading a finished narration: the post goes to "upload_pending" and the
+    upload alone is retried between posts, after 5, 15, 45, 120, 240 and 480
+    minutes (~15 hours) — the narration is kept, never regenerated.
+
 Run:  python wp_backfill.py            (loop; launchd keeps it running)
       python wp_backfill.py --status   (what's done, skipped, failed)
       python wp_backfill.py --text ID  (print the text a post WOULD be read as)
@@ -71,8 +79,15 @@ POLL_SECONDS = 60
 # Re-read the candidate list at most this often — each read is a ~25s wp-cli
 # call, and the back catalogue doesn't change minute to minute.
 CANDIDATE_TTL = 3600
-MAX_ATTEMPTS = 3
+# Minutes to wait before each retry of reading/importing a post; one more
+# failure after the last delay gives up (so MAX_ATTEMPTS tries in all).
+RETRY_DELAYS = (5, 15, 45)
+MAX_ATTEMPTS = len(RETRY_DELAYS) + 1
+# Minutes before each retry of a failed upload. Longer, because the expensive
+# part (the narration) is already done and waiting in the app.
+UPLOAD_RETRY_DELAYS = (5, 15, 45, 120, 240, 480)
 _TERMINAL = ("published", "skipped", "failed")
+UPLOAD_PENDING = "upload_pending"
 # Fewer words than this after conversion means the post is mostly embeds (a
 # video or podcast page) — nothing worth narrating.
 MIN_WORDS = 150
@@ -229,6 +244,10 @@ def restart_app(command, app_url, headers):
 
 # ---- The queue --------------------------------------------------------------
 
+def _now():
+    return time.time()
+
+
 def save_state(state):
     tmp = STATE_FILE + ".tmp"
     with open(tmp, "w") as f:
@@ -297,8 +316,21 @@ class Backfill:
             log(f"{len(self._candidates)} post(s) without narration of their own.")
         done = self.state["posts"]
         for post in self._candidates:
-            if done.get(str(post["ID"]), {}).get("status") not in _TERMINAL:
-                return post
+            entry = done.get(str(post["ID"]), {})
+            if entry.get("status") in _TERMINAL or entry.get("status") == UPLOAD_PENDING:
+                continue
+            if entry.get("retry_at", 0) > now:
+                continue      # waiting out a failure; newer/older posts go first
+            return post
+        return None
+
+    def due_upload(self):
+        """A post whose narration is done but whose upload failed, if its next
+        try is due."""
+        now = _now()
+        for post_id, entry in self.state["posts"].items():
+            if entry.get("status") == UPLOAD_PENDING and entry.get("retry_at", 0) <= now:
+                return int(post_id), entry    # state keys are strings
         return None
 
     def _entry(self, post_id):
@@ -307,6 +339,7 @@ class Backfill:
     def _finish(self, post_id, status, note=None):
         entry = self._entry(post_id)
         entry["status"] = status
+        entry.pop("retry_at", None)
         entry["finished_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
         if note:
             entry["note"] = note
@@ -319,13 +352,16 @@ class Backfill:
     def poll(self):
         if self.state.get("current"):
             return self.check_current()
+        if self.app_busy():
+            return
+        due = self.due_upload()
+        if due:
+            return self.retry_upload(*due)
         if self.published_count() >= self.limit:
             if not self._said_limit:
                 log(f"Published {self.published_count()} of the limit {self.limit} — "
                     f"paused. Raise backfill.limit and restart to continue.")
                 self._said_limit = True
-            return
-        if self.app_busy():
             return
         if self.restart_due():
             return self.restart_app()
@@ -405,6 +441,22 @@ class Backfill:
             return self._finish(post_id, "failed", status)
         self.publish(post_id, entry, project)
 
+    def retry_upload(self, post_id, entry):
+        title = entry.get("title") or f"post {post_id}"
+        try:
+            project = self._app(f"/api/projects/{entry['project_id']}")
+        except requests.HTTPError as e:
+            if e.response is not None and e.response.status_code == 404:
+                return self._finish(post_id, "failed", "the project was deleted")
+            log(f"Couldn't read the narration for \"{title}\": {e}", "warn")
+            return
+        except requests.RequestException as e:
+            log(f"Couldn't read the narration for \"{title}\": {e}", "warn")
+            return
+        log(f"Retrying the upload for \"{title}\" "
+            f"(attempt {int(entry.get('upload_attempts', 0)) + 1} of {len(UPLOAD_RETRY_DELAYS) + 1}).")
+        self.publish(post_id, entry, project)
+
     def publish(self, post_id, entry, project):
         title = entry.get("title") or f"post {post_id}"
         project_id = entry["project_id"]
@@ -425,7 +477,7 @@ class Backfill:
             log(f"Not attaching \"{title}\": {e}.", "warn")
             return self._finish(post_id, "skipped", str(e))
         except (WordPressError, requests.RequestException, OSError) as e:
-            return self._attempt_failed(post_id, f"publish failed: {e}", keep_current=True)
+            return self._upload_failed(post_id, f"publish failed: {e}")
         finally:
             if tmpdir:
                 shutil.rmtree(tmpdir, ignore_errors=True)
@@ -436,7 +488,8 @@ class Backfill:
         log(f"Attached narration for \"{title}\" — {result.get('permalink')} "
             f"({self.published_count()} of {self.limit}).", "ok")
 
-    def _attempt_failed(self, post_id, reason, keep_current=False):
+    def _attempt_failed(self, post_id, reason):
+        """Reading or importing the post failed (nothing narrated yet)."""
         entry = self._entry(post_id)
         entry["attempts"] = int(entry.get("attempts", 0)) + 1
         entry["last_error"] = reason
@@ -444,9 +497,31 @@ class Backfill:
         if entry["attempts"] >= MAX_ATTEMPTS:
             log(f"Giving up on \"{title}\" after {entry['attempts']} attempts — {reason}", "error")
             return self._finish(post_id, "failed", reason)
-        log(f"\"{title}\": {reason} — will retry ({entry['attempts']}/{MAX_ATTEMPTS}).", "warn")
-        if not keep_current:
-            entry["status"] = "retry"   # not terminal: the next poll picks it again
+        delay = RETRY_DELAYS[entry["attempts"] - 1]
+        entry["status"] = "retry"   # not terminal: picked again once retry_at passes
+        entry["retry_at"] = _now() + delay * 60
+        log(f"\"{title}\": {reason} — will retry in {delay} min "
+            f"({entry['attempts']}/{MAX_ATTEMPTS}).", "warn")
+        save_state(self.state)
+
+    def _upload_failed(self, post_id, reason):
+        """The narration is done but didn't reach WordPress: park it and move
+        on; due_upload() brings it back between posts."""
+        entry = self._entry(post_id)
+        entry["upload_attempts"] = n = int(entry.get("upload_attempts", 0)) + 1
+        entry["last_error"] = reason
+        title = entry.get("title") or f"post {post_id}"
+        if n > len(UPLOAD_RETRY_DELAYS):
+            log(f"Giving up on uploading \"{title}\" after {n} attempts — {reason}. "
+                f"The narration is still in the app (project {entry.get('project_id')}).", "error")
+            return self._finish(post_id, "failed", reason)
+        delay = UPLOAD_RETRY_DELAYS[n - 1]
+        entry["status"] = UPLOAD_PENDING
+        entry["retry_at"] = _now() + delay * 60
+        if str(self.state.get("current")) == str(post_id):
+            self.state["current"] = None
+        log(f"\"{title}\": {reason} — narration kept; will retry the upload in {delay} min "
+            f"({n}/{len(UPLOAD_RETRY_DELAYS) + 1}) and carry on with the next post meanwhile.", "warn")
         save_state(self.state)
 
 
@@ -461,6 +536,8 @@ def print_status():
         print(f"\n{status} ({len(items)}):")
         for pid, p in items:
             note = f" — {p['note']}" if p.get("note") else ""
+            if p.get("retry_at"):
+                note += f" (next try {datetime.fromtimestamp(p['retry_at']).strftime('%a %H:%M')})"
             print(f"  {pid}  {p.get('title')}{note}")
 
 
