@@ -41,7 +41,7 @@ FLAC under the project → user downloads a merged WAV/M4A via `/api/merge` +
 | `text_parser.py` | Python port of the frontend's Markdown→paragraphs pipeline (keep in sync with `script.js`). Used by `/api/projects/import`. |
 | `doc_watcher.py` | Standalone Google Docs watcher: polls Drive for docs shared with a service account, imports them via `/api/projects/import`. Not bundled into the .app. |
 | `wp_publisher.py` | WordPress hand-off over SSH + wp-cli: title matching, media upload, ACF writes. Used by `doc_watcher.py`; not bundled into the .app. |
-| `wp_backfill.py` | Narrates existing posts with no audio of their own (Devotionals, QQTs) from the post text, one at a time, yielding to Google Docs. Runs on the mini under launchd; not bundled into the .app. |
+| `wp_backfill.py` | Narrates existing posts with no audio of their own (Devotionals, QQTs) from the post text, one at a time, yielding to Google Docs; also re-narrates narrated posts whose text changed, from ds-backend's `tts_queue` (see DOC_WATCHER.md). Runs on the mini under launchd; not bundled into the .app. |
 | `restart_app_if_idle.py` | Nightly (launchd `com.localtts.nightly-restart`, 03:30): restarts the app only when nothing is generating, to release memory generation leaks. Interrupted imports are resumed by the app on its next request. |
 | `DOC_WATCHER.md` | Setup guide for the Google Docs auto-import pipeline (service account, config, launchd, WordPress hand-off). |
 | `SERVER.md` | How to run the app as a shared remote generation server (token auth + tunnel). |

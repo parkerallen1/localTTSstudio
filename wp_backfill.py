@@ -51,11 +51,32 @@ works on other posts in between rather than waiting:
     upload alone is retried between posts, after 5, 15, 45, 120, 240 and 480
     minutes (~15 hours) — the narration is kept, never regenerated.
 
+Re-narration (the "renarrate" block of the backfill config): when a narrated
+post's text changes, WordPress (ds-backend's ds-tts-sync.php) puts it on a
+queue in Firestore; this lists that queue every few minutes, and once a post
+has gone QUIET minutes without another save it narrates it again — ahead of
+the back catalogue — and swaps the new audio in (the old file stays in the
+media library). "Changed" is decided here, exactly: the post is converted to
+the text it's read from and compared with the hash stored when it was last
+narrated (_tts_text_hash), so an edit that only touched images or formatting
+just updates the stored hashes.
+    "renarrate": {
+      "enabled": true,
+      "queue_url": "https://us-west2-dspirituality-461ee.cloudfunctions.net/ttsQueue",
+      "queue_key": "<TTS_WORKER_KEY>",
+      "quiet_minutes": 10
+    }
+An hourly sweep of the narrated posts backs the queue up: it stamps a baseline
+on narrations that have none yet (older ones, the Doc watcher's, uploads by
+hand — assuming they match the post as it is), and picks up any post whose
+content no longer matches its narration but whose queue request was lost.
+
 Run:  python wp_backfill.py            (loop; launchd keeps it running)
       python wp_backfill.py --status   (what's done, skipped, failed)
       python wp_backfill.py --text ID  (print the text a post WOULD be read as)
 """
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -88,6 +109,18 @@ MAX_ATTEMPTS = len(RETRY_DELAYS) + 1
 UPLOAD_RETRY_DELAYS = (5, 15, 45, 120, 240, 480)
 _TERMINAL = ("published", "skipped", "failed")
 UPLOAD_PENDING = "upload_pending"
+# A post narrated only by re-narration (never by the backfill itself); not
+# counted against backfill.limit.
+RENARRATED = "renarrated"
+# How often to list the re-narration queue, and to sweep the narrated posts.
+QUEUE_POLL = 300
+SWEEP_TTL = 3600
+# After a failure reading a queued post, wait this long before trying it again
+# (the entry stays on the queue meanwhile).
+RENARRATE_BACKOFF = 15 * 60
+# More drifted posts than this in one sweep looks like a bulk change to post
+# content (a plugin, a search-and-replace), not editing: queue none, say so.
+MAX_DRIFT = 10
 # Fewer words than this after conversion means the post is mostly embeds (a
 # video or podcast page) — nothing worth narrating.
 MIN_WORDS = 150
@@ -248,6 +281,10 @@ def _now():
     return time.time()
 
 
+def _sha(text):
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
 def save_state(state):
     tmp = STATE_FILE + ".tmp"
     with open(tmp, "w") as f:
@@ -267,6 +304,12 @@ class Backfill:
         self.state.setdefault("current", None)
         self._candidates, self._candidates_at = None, 0
         self._said_limit = False
+        self.rcfg = self.cfg.get("renarrate") or {}
+        # post id -> {content_hash, title, ready_at, from}; rebuilt from the
+        # queue each QUEUE_POLL, so it's not saved.
+        self._renarrate = {}
+        self._queue_at, self._sweep_at = 0, 0
+        self._backoff = {}
 
     # -- helpers --
 
@@ -333,11 +376,18 @@ class Backfill:
                 return int(post_id), entry    # state keys are strings
         return None
 
+    def _markdown(self, post):
+        return post_markdown(post["post_title"], post["content"],
+                             self.cfg.get("stop_at_headings") or ["Next step"],
+                             self.cfg.get("skip_sections") or [])
+
     def _entry(self, post_id):
         return self.state["posts"].setdefault(str(post_id), {})
 
     def _finish(self, post_id, status, note=None):
         entry = self._entry(post_id)
+        if entry.get("kind") == "renarrate":
+            return self._end_renarration(post_id, status, note)
         entry["status"] = status
         entry.pop("retry_at", None)
         entry["finished_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
@@ -357,6 +407,14 @@ class Backfill:
         due = self.due_upload()
         if due:
             return self.retry_upload(*due)
+        if self.rcfg.get("enabled"):
+            if self.restart_due():
+                return self.restart_app()
+            if _now() - self._sweep_at > SWEEP_TTL:
+                return self.sweep()
+            item = self.due_renarration()
+            if item:
+                return self.start_renarration(*item)
         if self.published_count() >= self.limit:
             if not self._said_limit:
                 log(f"Published {self.published_count()} of the limit {self.limit} — "
@@ -383,14 +441,17 @@ class Backfill:
             return self._attempt_failed(post_id, f"couldn't read the post: {e}")
         if post.get("own_audio"):
             return self._finish(post_id, "skipped", "has narration of its own now")
-        markdown = post_markdown(post["post_title"], post["content"],
-                                 self.cfg.get("stop_at_headings") or ["Next step"],
-                                 self.cfg.get("skip_sections") or [])
+        markdown = self._markdown(post)
         words = len(markdown.split())
         if words < MIN_WORDS:
             log(f"\"{post['post_title']}\" is only {words} words once embeds are "
                 f"left out — skipping.", "warn")
             return self._finish(post_id, "skipped", f"only {words} words of text")
+        self._import(post_id, post, markdown)
+
+    def _import(self, post_id, post, markdown, **extra):
+        """Import the post into the app and make it the current one."""
+        entry = self._entry(post_id)
         payload = {
             "name": post["post_title"],
             "raw_text": markdown,
@@ -405,15 +466,20 @@ class Backfill:
             r.raise_for_status()
             result = r.json()
         except requests.RequestException as e:
+            if extra.get("kind") == "renarrate":
+                raise                   # start_renarration backs off; it stays queued
             return self._attempt_failed(post_id, f"import failed: {e}")
         entry.update({
             "status": "generating", "project_id": result.get("id"),
-            "permalink": post.get("permalink"), "words": words,
+            "permalink": post.get("permalink"), "words": len(markdown.split()),
+            "content_hash": _sha(post["content"]), "text_hash": _sha(markdown),
             "started_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+            **extra,
         })
         self.state["current"] = post_id
         save_state(self.state)
-        log(f"Narrating \"{post['post_title']}\" (post {post_id}, {words} words, "
+        verb = "Re-narrating" if extra.get("kind") == "renarrate" else "Narrating"
+        log(f"{verb} \"{post['post_title']}\" (post {post_id}, {entry['words']} words, "
             f"{result.get('para_count')} paragraphs).", "ok")
 
     def check_current(self):
@@ -471,8 +537,12 @@ class Backfill:
             local = os.path.join(tmpdir, _audio_filename(title))
             with open(local, "wb") as f:
                 f.write(m4a)
-            result = self.pub.publish(post_id, local, extra_fields=fields, media_title=title,
-                                      source=project_id, only_if_no_own_audio=True)
+            renarrate = entry.get("kind") == "renarrate"
+            result = self.pub.publish(
+                post_id, local, extra_fields=fields, media_title=title, source=project_id,
+                only_if_no_own_audio=not renarrate,
+                expect_audio=entry.get("expect_audio") if renarrate else None,
+                content_hash=entry.get("content_hash"), text_hash=entry.get("text_hash"))
         except WordPressSkip as e:
             log(f"Not attaching \"{title}\": {e}.", "warn")
             return self._finish(post_id, "skipped", str(e))
@@ -484,6 +554,10 @@ class Backfill:
         _append_publish_log(info, post_id, result, matched_by="backfill")
         entry["attachment_id"] = result.get("attachment_id")
         self.state["since_restart"] = int(self.state.get("since_restart", 0)) + 1
+        if entry.get("kind") == "renarrate":
+            log(f"Re-narrated \"{title}\" — {result.get('permalink')} (the old audio "
+                f"stays in the media library).", "ok")
+            return self._finish(post_id, "published")
         self._finish(post_id, "published")
         log(f"Attached narration for \"{title}\" — {result.get('permalink')} "
             f"({self.published_count()} of {self.limit}).", "ok")
@@ -523,6 +597,157 @@ class Backfill:
         log(f"\"{title}\": {reason} — narration kept; will retry the upload in {delay} min "
             f"({n}/{len(UPLOAD_RETRY_DELAYS) + 1}) and carry on with the next post meanwhile.", "warn")
         save_state(self.state)
+
+
+    # -- re-narration --
+
+    def _queue_request(self, method, **kw):
+        r = requests.request(method, self.rcfg["queue_url"], timeout=30,
+                             headers={"x-api-key": self.rcfg.get("queue_key", "")}, **kw)
+        r.raise_for_status()
+        return r.json()
+
+    def refresh_queue(self):
+        """Merge the Firestore queue into self._renarrate. `ready_at` is local
+        time: the server's own clock decides how long ago the last save was."""
+        self._queue_at = _now()
+        try:
+            data = self._queue_request("GET")
+        except (requests.RequestException, ValueError) as e:
+            log(f"Couldn't read the re-narration queue: {e}", "warn")
+            return
+        quiet = float(self.rcfg.get("quiet_minutes", 10)) * 60
+        queued = set()
+        for item in data.get("items", []):
+            pid = int(item["postId"])
+            queued.add(pid)
+            since = max(0.0, (data["now"] - (item.get("lastSavedAt") or 0)) / 1000)
+            self._renarrate[pid] = {"content_hash": item.get("contentHash"),
+                                    "title": item.get("title"), "from": "queue",
+                                    "ready_at": _now() + max(0.0, quiet - since)}
+        for pid in [p for p, i in self._renarrate.items()
+                    if i["from"] == "queue" and p not in queued]:
+            del self._renarrate[pid]      # acked, or done elsewhere
+
+    def due_renarration(self):
+        if _now() - self._queue_at > QUEUE_POLL:
+            self.refresh_queue()
+        now = _now()
+        for pid, item in sorted(self._renarrate.items(), key=lambda kv: kv[1]["ready_at"]):
+            status = self.state["posts"].get(str(pid), {}).get("status")
+            if item["ready_at"] > now or self._backoff.get(pid, 0) > now or status == UPLOAD_PENDING:
+                continue
+            return pid, item
+        return None
+
+    def sweep(self):
+        """Stamp baselines on narrations without one; queue posts whose
+        content drifted from their narration without a queue request."""
+        self._sweep_at = _now()
+        try:
+            r = self.pub.narrated_posts(self.cfg.get("categories") or ["Devotionals", "Quick Quiet Times"])
+        except WordPressError as e:
+            log(f"Couldn't sweep the narrated posts: {e}", "warn")
+            return
+        if r["baseline"]:
+            posts = [{"ID": p["ID"], "content_hash": _sha(p["content"]),
+                      "text_hash": _sha(self._markdown(p))}
+                     for p in r["baseline"]]
+            try:
+                w = self.pub.set_narration_hashes(posts)
+                log(f"Recorded what {w['written']} existing narration(s) were made from.")
+            except WordPressError as e:
+                log(f"Couldn't record narration baselines: {e}", "warn")
+        if r.get("baseline_remaining"):
+            # Baselines go a batch per sweep; the next batch between the next posts.
+            log(f"{r['baseline_remaining']} more narration(s) to record baselines for.")
+            self._sweep_at = _now() - SWEEP_TTL + QUEUE_POLL
+        quiet = float(self.rcfg.get("quiet_minutes", 10)) * 60
+        if len(r["drifted"]) > MAX_DRIFT:
+            log(f"{len(r['drifted'])} narrated posts' content changed without being queued — "
+                f"that looks like a bulk edit, so none are being re-narrated. Check what changed; "
+                f"to re-narrate them anyway, save them in the editor.", "error")
+            return
+        for p in r["drifted"]:
+            if p["ID"] not in self._renarrate:
+                log(f"\"{p['post_title']}\" changed since it was narrated, and wasn't queued — queueing it.")
+                self._renarrate[p["ID"]] = {"content_hash": p["content_hash"], "title": p["post_title"],
+                                            "from": "sweep", "ready_at": max(_now(), p["modified"] + quiet)}
+
+    def start_renarration(self, post_id, item):
+        title = item.get("title") or f"post {post_id}"
+        try:
+            post = self.pub.post_for_narration(post_id)
+        except WordPressError as e:
+            log(f"Couldn't read \"{title}\" to re-narrate it: {e} — trying again later.", "warn")
+            self._backoff[post_id] = _now() + RENARRATE_BACKOFF
+            return
+        content_hash = _sha(post.get("content") or "")
+        if post.get("post_status") != "publish" or not post.get("audio_id"):
+            return self._ack(post_id, content_hash, "skipped", "not published, or no narration of its own")
+        markdown = self._markdown(post)
+        text_hash = _sha(markdown)
+        if post.get("text_hash_meta") == text_hash:
+            try:
+                self.pub.set_narration_hashes([{"ID": post_id, "content_hash": content_hash,
+                                                "text_hash": text_hash}])
+            except WordPressError as e:
+                log(f"Couldn't update the hashes for \"{title}\": {e} — trying again later.", "warn")
+                self._backoff[post_id] = _now() + RENARRATE_BACKOFF
+                return
+            log(f"\"{post['post_title']}\" was edited, but not the text it's read from — "
+                f"keeping its narration.")
+            return self._ack(post_id, content_hash, "unchanged")
+        if len(markdown.split()) < MIN_WORDS:
+            return self._ack(post_id, content_hash, "skipped", "too little text to narrate")
+        entry = self._entry(post_id)
+        prev = entry.get("status")
+        entry["title"] = post["post_title"]
+        entry["prev_status"] = prev if prev in _TERMINAL + (RENARRATED,) else None
+        entry["upload_attempts"] = 0
+        try:
+            self._import(post_id, post, markdown, kind="renarrate", expect_audio=post["audio_id"])
+        except requests.RequestException as e:
+            entry.pop("prev_status", None)
+            log(f"Couldn't import \"{title}\" to re-narrate it: {e} — trying again later.", "warn")
+            self._backoff[post_id] = _now() + RENARRATE_BACKOFF
+
+    def _end_renarration(self, post_id, status, note=None):
+        """A re-narration finished: record it, put the entry back to what it
+        was (a failed re-narration leaves the old narration standing), ack."""
+        entry = self._entry(post_id)
+        outcome = {"published": "renarrated", "skipped": "skipped"}.get(status, "failed")
+        prev = entry.pop("prev_status", None)
+        if status == "published":
+            entry["status"] = "published" if prev == "published" else RENARRATED
+            entry["renarrations"] = int(entry.get("renarrations", 0)) + 1
+        else:
+            entry["status"] = prev or RENARRATED
+        for k in ("kind", "expect_audio", "retry_at"):
+            entry.pop(k, None)
+        entry["renarrated_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
+        entry["renarration_outcome"] = outcome + (f": {note}" if note else "")
+        if outcome != "renarrated":
+            log(f"Re-narration of \"{entry.get('title')}\" {outcome}"
+                f"{': ' + note if note else ''} — its old narration stays.", "warn")
+        if str(self.state.get("current")) == str(post_id):
+            self.state["current"] = None
+        save_state(self.state)
+        self._ack(int(post_id), entry.get("content_hash") or "", outcome, note)
+
+    def _ack(self, post_id, content_hash, outcome, note=None):
+        self._renarrate.pop(post_id, None)
+        self._backoff.pop(post_id, None)
+        try:
+            r = self._queue_request("POST", json={"postId": post_id, "contentHash": content_hash,
+                                                  "outcome": outcome, "note": note or ""})
+        except (requests.RequestException, ValueError) as e:
+            # Still queued, so it comes back; the hashes now match, and it
+            # acks as unchanged next time.
+            log(f"Couldn't ack post {post_id} on the re-narration queue: {e}", "warn")
+            return
+        if r.get("result") == "stale":
+            log(f"Post {post_id} was saved again meanwhile — it stays queued.")
 
 
 def print_status():

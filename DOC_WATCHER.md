@@ -504,6 +504,47 @@ Stop it with `launchctl bootout gui/$(id -u)/com.localtts.backfill`, or set
 `"enabled": false` and restart it — a disabled backfill exits cleanly and the
 plist (`KeepAlive` → `SuccessfulExit: false`) leaves it stopped.
 
+**Retries.** WP Engine's SSH drops out for half an hour at a time, so failures
+are retried spaced out while other posts go ahead: reading/importing a post
+after 5, 15, 45 min, then `failed`; a finished narration whose upload fails
+becomes `upload_pending` and only the upload is retried, after 5, 15, 45, 120,
+240, 480 min — the narration is never regenerated.
+
+## Re-narrating a post when its text changes
+
+When a narrated Devotional/QQT is saved with different content, ds-backend's
+`ds-tts-sync.php` snippet queues it (Cloud Function `enqueueNarration` →
+Firestore `tts_queue`, one entry per post). The backfill lists that queue every
+5 minutes through `ttsQueue`, waits until the post has gone `quiet_minutes`
+without another save, then narrates it again — ahead of the back catalogue and
+regardless of `limit` — and swaps the new audio in. The old file stays in the
+media library. **Any** narration is replaced, recorded or generated.
+
+Whether the text really changed is decided here: every publish stamps
+`_tts_content_hash` (sha256 of the post content) and `_tts_text_hash` (of the
+text read aloud) on the post. A queued post whose converted text still matches
+`_tts_text_hash` — an image or formatting edit — just gets its hashes updated.
+The swap is skipped if the post's audio changed while the new take was
+generating, and a take with gaps is never published; either way the old
+narration stays. An hourly sweep stamps baselines on narrations without one
+(older ones, the Doc watcher's, uploads by hand — taken to match the post as
+it is) and queues any post whose content drifted without a queue request.
+
+```json
+"backfill": {
+  ...
+  "renarrate": {
+    "enabled": true,
+    "queue_url": "https://us-west2-dspirituality-461ee.cloudfunctions.net/ttsQueue",
+    "queue_key": "<TTS_WORKER_KEY>",
+    "quiet_minutes": 10
+  }
+}
+```
+
+`--status` lists re-narrated posts under `renarrated` (those only ever narrated
+this way) or `published`, with `renarration_outcome` in the state file.
+
 ## Memory: restarts, and why they're safe
 
 The app's memory grows with every generation — below anything it frees

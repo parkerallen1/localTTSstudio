@@ -32,6 +32,7 @@ Config lives in the "wordpress" block of doc_watcher.json; see DOC_WATCHER.md.
 """
 import base64
 import difflib
+import gzip
 import json
 import os
 import re
@@ -136,6 +137,18 @@ if ( ! empty( $payload['only_if_no_own_audio'] ) ) {
         tts_done( $out );
     }
 }
+// A re-narration replaces the post's narration, but only the one it was made
+// to replace: if someone changed the audio while the new take was generating,
+// theirs stays.
+if ( isset( $payload['expect_audio'] ) && null !== $payload['expect_audio'] ) {
+    $current = (int) get_field( $keys[ $payload['audio_field'] ], $post_id, false );
+    $own     = $current && ( $att = get_post( $current ) ) && (int) $att->post_parent === $post_id;
+    if ( ( $own ? $current : 0 ) !== (int) $payload['expect_audio'] ) {
+        $out['skipped'] = "the post's narration changed while the new one was generating"
+            . " (expected attachment {$payload['expect_audio']}, found " . ( $own ? $current : 'none' ) . ')';
+        tts_done( $out );
+    }
+}
 
 // ---- the audio -------------------------------------------------------------
 $attachment_id = 0;
@@ -229,6 +242,21 @@ if ( ! $dry_run ) {
         $out['error'] = "$problem — restored the previous values";
         $out['attachment_id'] = $attachment_id;
         tts_done( $out );
+    }
+}
+
+// What this narration was made from, for ds-tts-sync.php and the backfill to
+// tell when the post's text has changed since. The content hash defaults to
+// the post as it is now; a text hash is only known when the caller converted
+// the post itself (the backfill), so a stale one is removed rather than kept.
+if ( ! $dry_run ) {
+    $content_hash = ! empty( $payload['content_hash'] ) ? (string) $payload['content_hash']
+        : hash( 'sha256', $post->post_content );
+    update_post_meta( $post_id, '_tts_content_hash', $content_hash );
+    if ( ! empty( $payload['text_hash'] ) ) {
+        update_post_meta( $post_id, '_tts_text_hash', (string) $payload['text_hash'] );
+    } else {
+        delete_post_meta( $post_id, '_tts_text_hash' );
     }
 }
 
@@ -351,7 +379,80 @@ if ( ! $post ) {
         'permalink'   => get_permalink( $post ),
         'content'     => $post->post_content,
         'own_audio'   => $a && ( $att = get_post( $a ) ) && (int) $att->post_parent === (int) $post->ID,
+        'content_hash_meta' => (string) get_post_meta( $post->ID, '_tts_content_hash', true ),
+        'text_hash_meta'    => (string) get_post_meta( $post->ID, '_tts_text_hash', true ),
     );
+    $out['audio_id'] = $out['own_audio'] ? $a : 0;
+}
+echo "<<<TTSJSON>>>" . wp_json_encode( $out ) . "<<<TTSEND>>>\n";
+"""
+
+
+# Narrated posts in the given categories that the re-narration check needs to
+# hear about: `baseline` — no text hash yet (a narration from before hashes,
+# from the Doc watcher, or uploaded by hand), sent with their content so the
+# caller can stamp one; `drifted` — content no longer matching the hash of what
+# was narrated, i.e. an edit whose queue request never arrived.
+_NARRATED_PHP = r"""<?php
+$payload = json_decode( base64_decode( $args[0] ), true );
+$term_ids = array();
+foreach ( (array) $payload['categories'] as $name ) {
+    $term = get_term_by( 'name', $name, 'category' );
+    if ( ! $term ) continue;
+    $term_ids[] = (int) $term->term_id;
+    foreach ( (array) get_term_children( $term->term_id, 'category' ) as $child ) {
+        $term_ids[] = (int) $child;
+    }
+}
+$limit = isset( $payload['baseline_limit'] ) ? (int) $payload['baseline_limit'] : 15;
+$out = array( 'ok' => true, 'narrated' => 0, 'baseline' => array(), 'baseline_remaining' => 0,
+    'drifted' => array() );
+if ( $term_ids ) {
+    $ids = get_posts( array(
+        'post_type' => 'post', 'post_status' => 'publish', 'category__in' => array_values( array_unique( $term_ids ) ),
+        'numberposts' => -1, 'fields' => 'ids',
+    ) );
+    foreach ( $ids as $id ) {
+        $a = (int) get_post_meta( $id, $payload['audio_meta'], true );
+        if ( ! $a || ! ( $att = get_post( $a ) ) || (int) $att->post_parent !== (int) $id ) continue;
+        $out['narrated']++;
+        $post  = get_post( $id );
+        $hash  = hash( 'sha256', $post->post_content );
+        $chash = (string) get_post_meta( $id, '_tts_content_hash', true );
+        $thash = (string) get_post_meta( $id, '_tts_text_hash', true );
+        if ( '' !== $chash && $chash !== $hash ) {
+            $out['drifted'][] = array( 'ID' => (int) $id, 'post_title' => get_the_title( $id ),
+                'content_hash' => $hash, 'modified' => strtotime( $post->post_modified_gmt . ' UTC' ) );
+        } elseif ( '' === $thash ) {
+            // Content is the bulk of the reply, so only a batch per call.
+            if ( count( $out['baseline'] ) < $limit ) {
+                $out['baseline'][] = array( 'ID' => (int) $id, 'post_title' => get_the_title( $id ),
+                    'content' => $post->post_content );
+            } else {
+                $out['baseline_remaining']++;
+            }
+        }
+    }
+}
+echo "<<<TTSJSON>>>" . wp_json_encode( $out ) . "<<<TTSEND>>>\n";
+"""
+
+# Stamp narration hashes: [{ID, content_hash, text_hash}]. With `only_if`, a
+# post is skipped unless its content still hashes to content_hash (it may have
+# been edited since it was read).
+_SET_HASHES_PHP = r"""<?php
+$payload = json_decode( base64_decode( $args[0] ), true );
+$out = array( 'ok' => true, 'written' => 0, 'changed' => array() );
+foreach ( (array) $payload['posts'] as $p ) {
+    $post = get_post( (int) $p['ID'] );
+    if ( ! $post ) continue;
+    if ( hash( 'sha256', $post->post_content ) !== $p['content_hash'] ) {
+        $out['changed'][] = (int) $p['ID'];
+        continue;
+    }
+    update_post_meta( $post->ID, '_tts_content_hash', (string) $p['content_hash'] );
+    update_post_meta( $post->ID, '_tts_text_hash', (string) $p['text_hash'] );
+    $out['written']++;
 }
 echo "<<<TTSJSON>>>" . wp_json_encode( $out ) . "<<<TTSEND>>>\n";
 """
@@ -565,11 +666,25 @@ class WordPressPublisher:
 
     # ---- Backfill ----------------------------------------------------------
 
-    def _eval_json(self, php, payload, timeout=300):
-        """Run a PHP helper (source on stdin, base64 JSON payload as argv[0])."""
+    def _eval_json(self, php, payload, timeout=300, compress=False):
+        """Run a PHP helper (source on stdin, base64 JSON payload as argv[0]).
+
+        `compress` sends the reply back gzipped and base64'd. Needed for replies
+        carrying post content in bulk: those hang in WP Engine's SSH gateway
+        (a 69 KB one never arrived; the same gzipped and base64'd, 85 KB, came
+        back in 39s) — plain ASCII gets through."""
         arg = base64.b64encode(json.dumps(payload).encode()).decode()
-        result = self._fenced_json(self._wp(["eval-file", "-", arg],
-                                            stdin_bytes=php.encode(), timeout=timeout))
+        if compress:
+            prefix = f"cd {_shquote(self.wp_path)} && " if self.wp_path else ""
+            out = self._run(f"{prefix}wp eval-file - {_shquote(arg)} | gzip -c | base64",
+                            stdin_bytes=php.encode(), timeout=timeout)
+            try:
+                out = gzip.decompress(base64.b64decode(out)).decode("utf-8", "replace")
+            except (ValueError, OSError) as e:
+                raise WordPressError(f"couldn't decode the compressed reply: {e}")
+        else:
+            out = self._wp(["eval-file", "-", arg], stdin_bytes=php.encode(), timeout=timeout)
+        result = self._fenced_json(out)
         if not result.get("ok"):
             raise WordPressError(result.get("error") or "the WordPress helper failed")
         return result
@@ -597,10 +712,31 @@ class WordPressPublisher:
         return self._eval_json(_POST_PHP, {"post_id": int(post_id),
                                            "audio_meta": self._audio_meta()})
 
+    def narrated_posts(self, categories, baseline_limit=15):
+        """Narrated posts needing a baseline hash or re-narration; see
+        _NARRATED_PHP. {narrated, baseline: [{ID, post_title, content}] (at
+        most baseline_limit), baseline_remaining, drifted: [{ID, post_title,
+        content_hash, modified}]}."""
+        return self._eval_json(_NARRATED_PHP, {
+            "categories": list(categories), "audio_meta": self._audio_meta(),
+            "baseline_limit": int(baseline_limit)}, timeout=600, compress=True)
+
+    def set_narration_hashes(self, posts):
+        """Stamp [{ID, content_hash, text_hash}] where the content still
+        matches. Returns {written, changed: [ids edited since]}. Batched so the
+        payload stays well inside the command-line limit."""
+        written, changed = 0, []
+        for i in range(0, len(posts), 100):
+            r = self._eval_json(_SET_HASHES_PHP, {"posts": posts[i:i + 100]})
+            written += r["written"]
+            changed += r["changed"]
+        return {"written": written, "changed": changed}
+
     # ---- Writing -----------------------------------------------------------
 
     def publish(self, post_id, m4a_path, extra_fields=None, media_title=None, source="",
-                only_if_no_own_audio=False):
+                only_if_no_own_audio=False, expect_audio=None, content_hash=None,
+                text_hash=None):
         """Upload the audio and point the post's fields at it — one SSH
         connection, one WordPress bootstrap (see _PUBLISH_PHP).
 
@@ -612,7 +748,13 @@ class WordPressPublisher:
 
         `source` (the project id) tags the attachment so a retry after a
         timeout reuses it. `only_if_no_own_audio` makes the write decline
-        (WordPressSkip) if the post has gained narration of its own. Returns the helper's result dict: permalink, edit link,
+        (WordPressSkip) if the post has gained narration of its own;
+        `expect_audio` (an attachment id, or 0 for none) makes a replacement
+        decline if the post's narration is no longer that one.
+
+        `content_hash`/`text_hash` record what the narration was made from
+        (sha256 of the post content, and of the text read aloud); see
+        _PUBLISH_PHP. Returns the helper's result dict: permalink, edit link,
         before/after for each field written, attachment id."""
         audio_field = (self.cfg.get("audio_field") or "").strip()
         if not audio_field:
@@ -631,6 +773,9 @@ class WordPressPublisher:
             "purge_cache": bool(self.cfg.get("flush_cache", True)),
             "media_folder": (self.cfg.get("media_folder") or "").strip(),
             "only_if_no_own_audio": bool(only_if_no_own_audio),
+            "expect_audio": None if expect_audio is None else int(expect_audio),
+            "content_hash": content_hash or "",
+            "text_hash": text_hash or "",
         }).encode()).decode()
         php = base64.b64encode(_PUBLISH_PHP.encode()).decode()
         prefix = f"cd {_shquote(self.wp_path)} && " if self.wp_path else ""

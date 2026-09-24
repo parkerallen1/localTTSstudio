@@ -142,7 +142,10 @@ class FakePub:
                 "content": "<p>too short</p>" if p.get("short") else LONG}
 
     def publish(self, post_id, path, extra_fields=None, media_title=None, source="",
-                only_if_no_own_audio=False):
+                only_if_no_own_audio=False, expect_audio=None, content_hash=None,
+                text_hash=None):
+        self.publish_kw = {"expect_audio": expect_audio, "content_hash": content_hash,
+                           "text_hash": text_hash, "only_if_no_own_audio": only_if_no_own_audio}
         if post_id in self.skip_on_publish:
             raise WordPressSkip("the post already has its own narration (attachment 9)")
         self.published.append((post_id, only_if_no_own_audio, source))
@@ -156,6 +159,7 @@ def make(limit=3, busy=False, status="done"):
     bf.pub = FakePub()
     bf.state = {"posts": {}, "current": None}
     bf._candidates, bf._candidates_at, bf._said_limit = None, 0, False
+    bf.rcfg, bf._renarrate, bf._queue_at, bf._sweep_at, bf._backoff = {}, {}, 0, 0, {}
     bf.imports = []
     w = types.SimpleNamespace(app_url="http://app", settings=None, _app_headers=lambda: {},
                               export_m4a=lambda pid, ids: b"M4A",
@@ -299,6 +303,150 @@ bf = make()
 bf.state["posts"]["7"] = {"status": "upload_pending", "retry_at": 0, "project_id": "proj-7", "title": "Post 7"}
 bf.poll()
 check("an upload pending from before a restart is picked up", bf.state["posts"]["7"]["status"], "published")
+
+print("\n--- re-narration when a post's text changes ---")
+import hashlib
+sha = lambda t: hashlib.sha256(t.encode()).hexdigest()
+TEXT_V1 = "<p>" + " ".join(["first"] * 200) + "</p>"
+TEXT_V2 = "<p>" + " ".join(["second"] * 200) + "</p>"
+
+
+class RenarratePub(FakePub):
+    """Post 9 is narrated (attachment 77) and was edited since."""
+    def __init__(self):
+        super().__init__()
+        self.content = {9: TEXT_V2}
+        self.text_hash_meta = {9: "old"}
+        self.hashes, self.narrated_calls = [], 0
+
+    def backfill_candidates(self, cats):
+        return []
+
+    def post_for_narration(self, pid):
+        return {"ok": True, "ID": pid, "post_title": f"Post {pid}", "post_status": "publish",
+                "permalink": f"https://example.com/p{pid}/", "own_audio": True, "audio_id": 77,
+                "content": self.content[pid], "text_hash_meta": self.text_hash_meta.get(pid, "")}
+
+    def set_narration_hashes(self, posts):
+        self.hashes += posts
+        return {"written": len(posts), "changed": []}
+
+    def narrated_posts(self, cats, baseline_limit=50):
+        self.narrated_calls += 1
+        return {"narrated": 1, "baseline": [], "drifted": []}
+
+
+queue = {"items": [], "acks": []}
+def fake_request(method, url, json=None, **kw):
+    if method == "GET":
+        payload = {"ok": True, "now": clock["t"] * 1000, "items": queue["items"]}
+    else:
+        queue["acks"].append(json)
+        payload = {"ok": True, "result": "done"}
+    return types.SimpleNamespace(raise_for_status=lambda: None, json=lambda: payload)
+wp_backfill.requests.request = fake_request
+
+
+def make_r():
+    bf = make(limit=0)
+    bf.pub = RenarratePub()
+    bf.rcfg = {"enabled": True, "queue_url": "http://q", "queue_key": "k", "quiet_minutes": 10}
+    bf._sweep_at = clock["t"]          # no sweep unless a test asks
+    queue["acks"].clear()
+    return bf
+
+
+bf = make_r()
+queue["items"] = [{"postId": 9, "contentHash": sha(TEXT_V2), "title": "Post 9",
+                   "lastSavedAt": (clock["t"] - 120) * 1000}]
+bf.poll()
+check("waits out the quiet period after the last save", bf.imports, [])
+clock["t"] += 8 * 60 + 1
+bf._queue_at = 0
+bf.poll()
+check("then re-narrates, even past the backfill limit", bf.state["current"], 9)
+check("imports the new text", "second" in bf.imports[0]["raw_text"], True)
+bf.poll()
+check("replaces only the narration it saw", bf.pub.publish_kw["expect_audio"], 77)
+check("not guarded by own-audio (it has audio)", bf.pub.publish_kw["only_if_no_own_audio"], False)
+check("records what it was made from", bf.pub.publish_kw["content_hash"], sha(TEXT_V2))
+check("acked with the content it narrated", queue["acks"][-1],
+      {"postId": 9, "contentHash": sha(TEXT_V2), "outcome": "renarrated", "note": ""})
+e9 = bf.state["posts"]["9"]
+check("marked re-narrated, not counted toward the limit",
+      (e9["status"], bf.published_count()), ("renarrated", 0))
+check("no leftover re-narration fields", [k for k in ("kind", "expect_audio", "prev_status") if k in e9], [])
+
+bf = make_r()
+bf.state["posts"]["9"] = {"status": "published", "title": "Post 9"}
+bf.pub.text_hash_meta[9] = None
+queue["items"] = [{"postId": 9, "contentHash": sha(TEXT_V2), "title": "Post 9", "lastSavedAt": 0}]
+bf.poll(); bf.poll()
+check("a backfilled post stays counted as published",
+      (bf.state["posts"]["9"]["status"], bf.state["posts"]["9"]["renarrations"]), ("published", 1))
+
+bf = make_r()
+queue["items"] = [{"postId": 9, "contentHash": sha(TEXT_V2), "title": "Post 9", "lastSavedAt": 0}]
+text_now = wp_backfill.post_markdown("Post 9", TEXT_V2, ["Next step"])
+bf.pub.text_hash_meta[9] = sha(text_now)
+bf.poll()
+check("markup-only edit: nothing narrated", bf.imports, [])
+check("  hashes updated instead", bf.pub.hashes, [{"ID": 9, "content_hash": sha(TEXT_V2), "text_hash": sha(text_now)}])
+check("  acked as unchanged", queue["acks"][-1]["outcome"], "unchanged")
+
+bf = make_r()
+queue["items"] = [{"postId": 9, "contentHash": sha(TEXT_V2), "title": "Post 9", "lastSavedAt": 0}]
+bf.pub.skip_on_publish = {9}
+bf.poll(); bf.poll()
+check("audio changed meanwhile: skipped, acked", queue["acks"][-1]["outcome"], "skipped")
+check("  current cleared", bf.state["current"], None)
+
+bf = make_r()
+queue["items"] = [{"postId": 9, "contentHash": sha(TEXT_V2), "title": "Post 9", "lastSavedAt": 0}]
+def boom(pid):
+    raise WordPressError("ssh timed out")
+bf.pub.post_for_narration = boom
+bf.poll()
+check("read failure: not acked, backed off", (queue["acks"], 9 in bf._backoff), ([], True))
+bf.poll()
+check("  not retried inside the backoff", bf.imports, [])
+
+bf = make_r()
+queue["items"] = [{"postId": 9, "contentHash": sha(TEXT_V2), "title": "Post 9", "lastSavedAt": 0}]
+bf.project_status = "done (1 of 3 failed)"
+bf.state["posts"]["9"] = {"status": "published", "title": "Post 9"}
+bf.poll(); bf.poll()
+check("gaps in the new take: old narration stands",
+      (bf.state["posts"]["9"]["status"], queue["acks"][-1]["outcome"], bf.pub.published), ("published", "failed", []))
+
+bf = make_r()
+queue["items"] = []
+bf._sweep_at = 0
+bf.pub.narrated_posts = lambda cats, **kw: {"narrated": 2, "baseline_remaining": 7, "baseline": [
+    {"ID": 5, "post_title": "Post 5", "content": TEXT_V1}],
+    "drifted": [{"ID": 9, "post_title": "Post 9", "content_hash": sha(TEXT_V2), "modified": clock["t"] - 3600}]}
+bf.poll()
+check("sweep stamps a baseline, title included",
+      bf.pub.hashes, [{"ID": 5, "content_hash": sha(TEXT_V1),
+                       "text_hash": sha(wp_backfill.post_markdown("Post 5", TEXT_V1, ["Next step"]))}])
+check("sweep queues a drifted post the queue missed", 9 in bf._renarrate, True)
+check("more baselines left: next sweep in 5 min, not an hour",
+      round(bf._sweep_at + wp_backfill.SWEEP_TTL - clock["t"]), wp_backfill.QUEUE_POLL)
+bf.poll()
+check("  and it's re-narrated", bf.state["current"], 9)
+
+bf = make_r()
+bf._sweep_at = 0
+bf.pub.narrated_posts = lambda cats, **kw: {"narrated": 50, "baseline": [], "drifted": [
+    {"ID": 100 + i, "post_title": "x", "content_hash": "h", "modified": 0} for i in range(wp_backfill.MAX_DRIFT + 1)]}
+bf.poll()
+check("a bulk content change queues nothing", bf._renarrate, {})
+
+bf = make_r()
+bf.rcfg = {}
+queue["items"] = [{"postId": 9, "contentHash": sha(TEXT_V2), "title": "Post 9", "lastSavedAt": 0}]
+bf.poll()
+check("off unless renarrate.enabled", bf.imports, [])
 
 print("\n--- the app is restarted between posts ---")
 bf = make(limit=5)
