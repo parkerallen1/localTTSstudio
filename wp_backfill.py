@@ -399,7 +399,52 @@ class Backfill:
 
     # -- one step --
 
+    def summary(self):
+        """What's left, for the app's queue counter (/api/backfill_status):
+        posts still to narrate, what's narrating now, and edits waiting to be
+        re-narrated. `remaining` is None until the candidate list is read."""
+        posts = self.state["posts"]
+        remaining = None
+        if self._candidates is not None:
+            remaining = sum(1 for p in self._candidates
+                            if posts.get(str(p["ID"]), {}).get("status") not in _TERMINAL)
+        cur = self.state.get("current")
+        entry = posts.get(str(cur), {}) if cur else {}
+        when = lambda t: datetime.fromtimestamp(t).astimezone().isoformat(timespec="seconds")
+        return {
+            "remaining": remaining,
+            "published": self.published_count(),
+            "limit": self.limit,
+            "current": {"post_id": cur, "title": entry.get("title"),
+                        "kind": entry.get("kind") or "narrate", "started_at": entry.get("started_at"),
+                        "permalink": entry.get("permalink")} if cur else None,
+            "renarrate_enabled": bool(self.rcfg.get("enabled")),
+            "renarrate": [{"post_id": pid, "title": item.get("title"), "ready_at": when(item["ready_at"])}
+                          for pid, item in sorted(self._renarrate.items(), key=lambda kv: kv[1]["ready_at"])
+                          if str(pid) != str(cur)],
+            "upload_pending": [{"post_id": int(pid), "title": e.get("title")}
+                               for pid, e in posts.items() if e.get("status") == UPLOAD_PENDING],
+        }
+
+    def _save_summary(self):
+        summary = self.summary()
+        if summary["remaining"] is None:     # not read since a restart: keep the last count
+            summary["remaining"] = (self.state.get("summary") or {}).get("remaining")
+        # Also every 5 minutes regardless: the file's mtime is the app's "is the
+        # backfill still running?" signal, and one long post can run 30+.
+        stale = _now() - getattr(self, "_summary_saved_at", 0) > 300
+        if summary != self.state.get("summary") or stale:
+            self.state["summary"] = summary
+            save_state(self.state)
+            self._summary_saved_at = _now()
+
     def poll(self):
+        try:
+            self._step()
+        finally:
+            self._save_summary()
+
+    def _step(self):
         if self.state.get("current"):
             return self.check_current()
         if self.app_busy():

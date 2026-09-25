@@ -230,6 +230,32 @@ document.addEventListener('DOMContentLoaded', () => {
         temperatureValue.textContent = parseFloat(temperatureSlider.value).toFixed(2);
     });
 
+    // --- Backfill queue counter on the Published button ---
+    // "· 158 left": posts the backfill has yet to narrate plus edits waiting to
+    // be re-narrated, from wp_backfill.py's state (/api/backfill_status). Hidden
+    // where there's no backfill (a desktop install).
+    const pubQueueCount = document.getElementById('pub-queue-count');
+    const btnPublished = document.getElementById('btn-published');
+    async function refreshQueueCount() {
+        let s;
+        try {
+            const res = await fetch('/api/backfill_status');
+            if (!res.ok) return;
+            s = await res.json();
+        } catch {
+            return;
+        }
+        if (!s.available) { pubQueueCount.classList.add('hidden'); return; }
+        const posts = s.remaining ?? 0;
+        const edits = (s.renarrate || []).length;
+        pubQueueCount.textContent = ` · ${posts + edits} left`;
+        pubQueueCount.classList.remove('hidden');
+        const now = s.current ? `\nNow: ${s.current.kind === 'renarrate' ? 're-narrating' : 'narrating'} "${s.current.title}"` : '';
+        btnPublished.title = `${s.remaining ?? '?'} post(s) left to narrate, ${edits} edit(s) waiting to be re-narrated${now}\nClick for the queue and everything published.`;
+    }
+    refreshQueueCount();
+    setInterval(refreshQueueCount, 60000);
+
     // --- Auto-Updater Logic ---
     async function checkForUpdates() {
         try {

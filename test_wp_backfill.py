@@ -448,6 +448,25 @@ queue["items"] = [{"postId": 9, "contentHash": sha(TEXT_V2), "title": "Post 9", 
 bf.poll()
 check("off unless renarrate.enabled", bf.imports, [])
 
+print("\n--- the queue summary for the app ---")
+bf = make(limit=10)
+bf.poll()                                   # reads candidates 1-4, starts post 1
+s = bf.state["summary"]
+check("counts what's left, the current post included", s["remaining"], 4)
+check("names the current post", (s["current"]["post_id"], s["current"]["kind"]), (1, "narrate"))
+bf.poll()                                   # publishes post 1
+check("one fewer once published", (bf.state["summary"]["remaining"], bf.state["summary"]["current"]), (3, None))
+bf2 = make(limit=10)
+bf2.state["summary"] = {"remaining": 42}
+bf2.app_busy = lambda: True
+bf2.poll()
+check("keeps the last count until the list is read again", bf2.state["summary"]["remaining"], 42)
+bf3 = make_r()
+queue["items"] = [{"postId": 9, "contentHash": sha(TEXT_V2), "title": "Post 9",
+                   "lastSavedAt": clock["t"] * 1000}]
+bf3.poll()
+check("lists edits waiting to be re-narrated", [r["post_id"] for r in bf3.state["summary"]["renarrate"]], [9])
+
 print("\n--- the app is restarted between posts ---")
 bf = make(limit=5)
 bf.cfg.update(restart_app_every=1, restart_app_command="true")

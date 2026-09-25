@@ -1239,6 +1239,27 @@ def get_wp_publishes():
     entries.reverse()
     return {"entries": entries}
 
+# Written by wp_backfill.py: its queue, and a "summary" of what's left that
+# it refreshes on every poll. Same directory as the publish log, for the same
+# reason.
+BACKFILL_STATE = os.environ.get("QWEN_TTS_BACKFILL_STATE") or os.path.expanduser(
+    "~/.qwen_tts_studio/wp_backfill_state.json")
+
+@app.get("/api/backfill_status")
+def get_backfill_status():
+    """How much the backfill has left, for the queue counter on the Published
+    button and page. `as_of` is when the backfill last wrote its state, so a
+    stopped backfill shows as stale rather than as a queue that never moves."""
+    try:
+        with open(BACKFILL_STATE, encoding="utf-8") as f:
+            summary = (json.load(f) or {}).get("summary")
+        as_of = datetime.fromtimestamp(os.path.getmtime(BACKFILL_STATE)).astimezone()
+    except (FileNotFoundError, ValueError):
+        summary = None
+    if not summary:
+        return {"available": False}
+    return {"available": True, **summary, "as_of": as_of.isoformat(timespec="seconds")}
+
 @app.get("/api/profiles")
 def get_profiles():
     """List all saved voice profiles."""

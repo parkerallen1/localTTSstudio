@@ -7,7 +7,8 @@
   now and then that nothing is landing on the wrong post.
 
   Static on purpose — the data comes from /api/wp_publishes, which main.py
-  reads from the watcher's append-only publish log. In server mode that API is
+  reads from the watcher's append-only publish log, and the Queue panel from
+  /api/backfill_status (wp_backfill.py's state), refreshed every minute. In server mode that API is
   behind the access code, so this page carries nothing on its own.
 -->
 <html lang="en">
@@ -30,6 +31,18 @@
         .pub-article:hover { text-decoration: underline; }
         .pub-flag { display: inline-block; font-size: 0.72rem; font-weight: 600; padding: 0.05rem 0.45rem; border-radius: 999px; border: 1px solid var(--glass-border); color: var(--text-muted); margin-left: 0.35rem; vertical-align: 1px; }
         .pub-empty { color: var(--text-muted); padding: 2rem 0; text-align: center; }
+        .pub-header-right { display: flex; align-items: baseline; gap: 1rem; }
+        .q-pill { font-size: 0.85rem; font-weight: 600; padding: 0.2rem 0.7rem; border-radius: 999px; border: 1px solid var(--glass-border); font-variant-numeric: tabular-nums; }
+        .q-panel { margin-bottom: 1.5rem; }
+        .q-panel h2 { font-size: 1rem; margin: 0 0 0.75rem; }
+        .q-stats { display: flex; flex-wrap: wrap; gap: 0.5rem 2rem; margin-bottom: 0.75rem; }
+        .q-stat b { font-size: 1.4rem; font-variant-numeric: tabular-nums; display: block; }
+        .q-stat span { font-size: 0.8rem; color: var(--text-muted); }
+        .q-line { font-size: 0.9rem; margin: 0.35rem 0; overflow-wrap: anywhere; }
+        .q-line a { color: var(--primary); text-decoration: none; }
+        .q-list { margin: 0.25rem 0 0; padding-left: 1.2rem; font-size: 0.9rem; }
+        .q-list li { margin: 0.2rem 0; }
+        .q-muted { color: var(--text-muted); font-size: 0.8rem; }
         @media (max-width: 640px) {
             .pub-table, .pub-table tbody { display: block; }
             .pub-table thead { display: none; }
@@ -42,7 +55,16 @@
     <div class="container">
         <div class="pub-header">
             <h1>Published</h1>
-            <a href="/">&larr; Back to TTS Studio</a>
+            <div class="pub-header-right">
+                <span id="q-pill" class="q-pill hidden" title="Posts left to narrate, plus edits waiting to be re-narrated"></span>
+                <a href="/">&larr; Back to TTS Studio</a>
+            </div>
+        </div>
+        <div id="q-panel" class="glass q-panel hidden">
+            <h2>Queue</h2>
+            <div class="q-stats" id="q-stats"></div>
+            <div id="q-detail"></div>
+            <p class="q-muted" id="q-asof"></p>
         </div>
         <p class="subtitle">Audio the Google Doc watcher attached to WordPress, newest first.</p>
         <div class="glass">
@@ -54,6 +76,74 @@
         </div>
     </div>
     <script>
+    // The Queue panel: what the backfill is doing and has left.
+    (() => {
+        const $ = (id) => document.getElementById(id);
+        const el = (tag, props = {}, ...children) => {
+            const node = Object.assign(document.createElement(tag), props);
+            node.append(...children);
+            return node;
+        };
+        const time = (iso) => {
+            const d = new Date(iso);
+            return isNaN(d) ? '' : d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+        };
+        const stat = (n, label) => el('div', { className: 'q-stat' }, el('b', { textContent: n }), el('span', { textContent: label }));
+
+        async function refresh() {
+            let s;
+            try {
+                const res = await fetch('/api/backfill_status');
+                if (!res.ok) return;
+                s = await res.json();
+            } catch {
+                return;
+            }
+            if (!s.available) return;
+            const posts = s.remaining ?? 0;
+            const edits = (s.renarrate || []).length;
+            $('q-pill').textContent = `${posts + edits} left`;
+            $('q-pill').classList.remove('hidden');
+
+            $('q-stats').replaceChildren(
+                stat(s.remaining ?? '…', 'posts left to narrate'),
+                stat(edits, 'edits to re-narrate'),
+                stat(s.published, 'narrated by the backfill'));
+
+            const detail = [];
+            if (s.current) {
+                const verb = s.current.kind === 'renarrate' ? 'Re-narrating' : 'Narrating';
+                const title = s.current.permalink
+                    ? el('a', { href: s.current.permalink, target: '_blank', rel: 'noopener', textContent: s.current.title })
+                    : s.current.title;
+                detail.push(el('p', { className: 'q-line' }, `${verb} now: `, title,
+                    s.current.started_at ? ` (since ${time(s.current.started_at)})` : ''));
+            } else {
+                detail.push(el('p', { className: 'q-line' }, posts + edits ? 'Between posts.' : 'All caught up.'));
+            }
+            if (edits) {
+                detail.push(el('p', { className: 'q-line' }, 'Waiting to be re-narrated:'),
+                    el('ul', { className: 'q-list' }, ...s.renarrate.map(r =>
+                        el('li', {}, r.title || `Post ${r.post_id}`,
+                            el('span', { className: 'q-muted', textContent: `  · from ${time(r.ready_at)}` })))));
+            }
+            if ((s.upload_pending || []).length) {
+                detail.push(el('p', { className: 'q-line' }, 'Narrated, upload being retried:'),
+                    el('ul', { className: 'q-list' }, ...s.upload_pending.map(u =>
+                        el('li', { textContent: u.title || `Post ${u.post_id}` }))));
+            }
+            if (!s.renarrate_enabled) {
+                detail.push(el('p', { className: 'q-muted', textContent: 'Re-narrating edited posts is off.' }));
+            }
+            $('q-detail').replaceChildren(...detail);
+            const stale = Date.now() - new Date(s.as_of) > 15 * 60 * 1000;
+            $('q-asof').textContent = `Updated ${time(s.as_of)}${stale ? ' — the backfill may be stopped' : ''}`;
+            $('q-panel').classList.remove('hidden');
+        }
+        refresh();
+        setInterval(refresh, 60000);
+    })();
+
     (async () => {
         const rows = document.getElementById('pub-rows');
         const status = document.getElementById('pub-status');

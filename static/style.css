@@ -421,6 +421,8 @@ button {
 }
 
 /* A link that looks like a button (the header's "Published" page link). */
+.pub-queue-count { font-variant-numeric: tabular-nums; opacity: 0.85; }
+
 a.link-btn {
     font-weight: 600;
     border-radius: 6px;
