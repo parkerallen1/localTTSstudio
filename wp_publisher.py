@@ -421,8 +421,13 @@ if ( $term_ids ) {
         $chash = (string) get_post_meta( $id, '_tts_content_hash', true );
         $thash = (string) get_post_meta( $id, '_tts_text_hash', true );
         if ( '' !== $chash && $chash !== $hash ) {
-            $out['drifted'][] = array( 'ID' => (int) $id, 'post_title' => get_the_title( $id ),
-                'content_hash' => $hash, 'modified' => strtotime( $post->post_modified_gmt . ' UTC' ) );
+            // With the content, so the caller can tell a text change from a
+            // markup-only one; capped like the baseline batch.
+            $d = array( 'ID' => (int) $id, 'post_title' => get_the_title( $id ),
+                'content_hash' => $hash, 'modified' => strtotime( $post->post_modified_gmt . ' UTC' ),
+                'text_hash_meta' => $thash );
+            if ( count( $out['drifted'] ) < 40 ) $d['content'] = $post->post_content;
+            $out['drifted'][] = $d;
         } elseif ( '' === $thash ) {
             // Content is the bulk of the reply, so only a batch per call.
             if ( count( $out['baseline'] ) < $limit ) {
@@ -716,7 +721,7 @@ class WordPressPublisher:
         """Narrated posts needing a baseline hash or re-narration; see
         _NARRATED_PHP. {narrated, baseline: [{ID, post_title, content}] (at
         most baseline_limit), baseline_remaining, drifted: [{ID, post_title,
-        content_hash, modified}]}."""
+        content_hash, modified, text_hash_meta, content (the first 40)}]}."""
         return self._eval_json(_NARRATED_PHP, {
             "categories": list(categories), "audio_meta": self._audio_meta(),
             "baseline_limit": int(baseline_limit)}, timeout=600, compress=True)

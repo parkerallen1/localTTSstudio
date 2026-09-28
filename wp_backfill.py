@@ -118,8 +118,11 @@ SWEEP_TTL = 3600
 # After a failure reading a queued post, wait this long before trying it again
 # (the entry stays on the queue meanwhile).
 RENARRATE_BACKOFF = 15 * 60
-# More drifted posts than this in one sweep looks like a bulk change to post
-# content (a plugin, a search-and-replace), not editing: queue none, say so.
+# More posts than this whose read-aloud TEXT changed without a queue request,
+# in one sweep, looks like a bulk change (a plugin, a search-and-replace), not
+# editing: queue none, say so. Markup-only drift doesn't count — on 2026-09-25
+# something rewrote 14 posts' HTML without touching their text, and counting
+# those blocked a real edit among them for three days.
 MAX_DRIFT = 10
 # Fewer words than this after conversion means the post is mostly embeds (a
 # video or podcast page) — nothing worth narrating.
@@ -708,12 +711,29 @@ class Backfill:
             log(f"{r['baseline_remaining']} more narration(s) to record baselines for.")
             self._sweep_at = _now() - SWEEP_TTL + QUEUE_POLL
         quiet = float(self.rcfg.get("quiet_minutes", 10)) * 60
-        if len(r["drifted"]) > MAX_DRIFT:
-            log(f"{len(r['drifted'])} narrated posts' content changed without being queued — "
+        # Markup-only drift: record the new content hash and move on.
+        markup_only, changed = [], []
+        for p in r["drifted"]:
+            if "content" not in p:
+                continue            # past the cap; next sweep
+            text_hash = _sha(self._markdown(p))
+            if text_hash == p.get("text_hash_meta"):
+                markup_only.append({"ID": p["ID"], "content_hash": p["content_hash"], "text_hash": text_hash})
+            else:
+                changed.append(p)
+        if markup_only:
+            try:
+                w = self.pub.set_narration_hashes(markup_only)
+                log(f"{w['written']} narrated post(s) had their markup changed but not their text — "
+                    f"narration kept.")
+            except WordPressError as e:
+                log(f"Couldn't update the hashes of markup-only changes: {e}", "warn")
+        if len(changed) > MAX_DRIFT:
+            log(f"{len(changed)} narrated posts' text changed without being queued — "
                 f"that looks like a bulk edit, so none are being re-narrated. Check what changed; "
                 f"to re-narrate them anyway, save them in the editor.", "error")
             return
-        for p in r["drifted"]:
+        for p in changed:
             if p["ID"] not in self._renarrate:
                 log(f"\"{p['post_title']}\" changed since it was narrated, and wasn't queued — queueing it.")
                 self._renarrate[p["ID"]] = {"content_hash": p["content_hash"], "title": p["post_title"],

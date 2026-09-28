@@ -424,7 +424,8 @@ queue["items"] = []
 bf._sweep_at = 0
 bf.pub.narrated_posts = lambda cats, **kw: {"narrated": 2, "baseline_remaining": 7, "baseline": [
     {"ID": 5, "post_title": "Post 5", "content": TEXT_V1}],
-    "drifted": [{"ID": 9, "post_title": "Post 9", "content_hash": sha(TEXT_V2), "modified": clock["t"] - 3600}]}
+    "drifted": [{"ID": 9, "post_title": "Post 9", "content_hash": sha(TEXT_V2), "modified": clock["t"] - 3600,
+                 "content": TEXT_V2, "text_hash_meta": "old"}]}
 bf.poll()
 check("sweep stamps a baseline, title included",
       bf.pub.hashes, [{"ID": 5, "content_hash": sha(TEXT_V1),
@@ -438,9 +439,22 @@ check("  and it's re-narrated", bf.state["current"], 9)
 bf = make_r()
 bf._sweep_at = 0
 bf.pub.narrated_posts = lambda cats, **kw: {"narrated": 50, "baseline": [], "drifted": [
-    {"ID": 100 + i, "post_title": "x", "content_hash": "h", "modified": 0} for i in range(wp_backfill.MAX_DRIFT + 1)]}
+    {"ID": 100 + i, "post_title": f"Post {100 + i}", "content_hash": "h", "modified": 0,
+     "content": TEXT_V2, "text_hash_meta": "old"} for i in range(wp_backfill.MAX_DRIFT + 1)]}
 bf.poll()
-check("a bulk content change queues nothing", bf._renarrate, {})
+check("a bulk text change queues nothing", bf._renarrate, {})
+
+bf = make_r()
+queue["items"] = []
+bf._sweep_at = 0
+same = lambda pid: sha(wp_backfill.post_markdown(f"Post {pid}", TEXT_V1, ["Next step"]))
+bf.pub.narrated_posts = lambda cats, **kw: {"narrated": 50, "baseline": [], "drifted":
+    [{"ID": 100 + i, "post_title": f"Post {100 + i}", "content_hash": f"h{i}", "modified": 0,
+      "content": TEXT_V1, "text_hash_meta": same(100 + i)} for i in range(14)] +
+    [{"ID": 7, "post_title": "Post 7", "content_hash": "h7", "modified": 0, "content": TEXT_V2, "text_hash_meta": "old"}]}
+bf.poll()
+check("markup-only drift: hashes updated, not re-narrated", len(bf.pub.hashes), 14)
+check("  a real text change among them is still queued", list(bf._renarrate), [7])
 
 bf = make_r()
 bf.rcfg = {}
