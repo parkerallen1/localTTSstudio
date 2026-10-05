@@ -9,7 +9,8 @@ first, and for each one
   1. reads the post's block content from WordPress and turns it into the
      Markdown the importer takes (headings, paragraphs, lists, scripture
      quotes; images, embeds, pull quotes, buttons and the like are left out;
-     each <h2> becomes a chapter),
+     each <h2> becomes a chapter; a quote's Bible reference is read before
+     the passage, though the site shows it after),
   2. imports it into TTS Studio, which generates every paragraph,
   3. publishes the result exactly as the watcher does — upload, the ACF
      fields, the FileBird folder, the publish log (so it shows on the
@@ -145,6 +146,85 @@ _BLOCK_RE = re.compile(
 # Anything a leftover [shortcode] would add is noise to a listener.
 _SHORTCODE_RE = re.compile(r"\[/?[a-z_][a-z0-9_-]*(?:\s[^\]]*)?\]", re.I)
 
+# A Bible reference on its own: "Psalm 63:1-3 NIV", "Matthew 7:3–5 AMP",
+# "Genesis 32:24,28 NIV", "— Luke 11:34 Voice", "Isaiah 38:17 - The Voice",
+# "I Timothy 1:5 MSG", "Hebrews 7:24-25 NIV (1984)". The shapes come from the
+# site's 7,131 quote-block citations (2026-10-05); this matches 98% of the
+# English ones. A translation name must start with a capital or a digit, so
+# "Psalm 23 reminds us..." is a sentence, not a reference.
+_BIBLE_BOOKS = (
+    "Genesis|Exodus|Leviticus|Numbers|Deuteronomy|Joshua|Judges|Ruth|Samuel|Kings|"
+    "Chronicles|Ezra|Nehemiah|Esther|Job|Psalms?|Proverbs|Ecclesiastes|Song of Solomon|"
+    "Song of Songs|Isaiah|Jeremiah|Lamentations|Ezekiel|Daniel|Hosea|Joel|Amos|Obadiah|"
+    "Jonah|Micah|Nahum|Habakkuk|Zephaniah|Haggai|Zechariah|Malachi|Matthew|Mark|Luke|"
+    "John|Acts|Romans|Corinthians|Galatians|Ephesians|Philippians|Colossians|"
+    "Thessalonians|Timothy|Titus|Philemon|Hebrews|James|Peter|Jude|Revelation|"
+    # common abbreviations
+    "Gen|Exod|Lev|Deut|Josh|Judg|Sam|Chron|Neh|Prov|Eccl|Isa|Jer|Lam|Ezek|Dan|Matt|"
+    "Rom|Cor|Gal|Eph|Phil|Col|Thess|Tim|Heb|Pet|Rev")
+_SCRIPTURE_REF = re.compile(
+    r"^[\s\u2014\u2013~(-]*"
+    r"(?:(?:[1-3]|I{1,3}|First|Second|Third)\s*)?(?i:" + _BIBLE_BOOKS + r")\.?"
+    r"\s*\d+(?:\s*[:.]\s*\d+[a-z]?)?"                                       # 3:16, 3.18
+    r"(?:\s*(?:[-\u2013\u2014,;]|and)\s*\d+(?:\s*[:.]\s*\d+)?[a-z]?)*"      # 7:3–5, 24,28, 6 and 8-9
+    r"(?:\s*[-\u2013\u2014,]?\s*\(?[A-Z0-9][\w'\u2019-]*\)?,?){0,6}"        # NIV, The Voice, (1984)
+    r"[\s.)\u2013\u2014-]*$")
+# Direction marks, zero-width spaces and byte-order marks pasted in from other
+# apps ("\u202dJames\u202c \u202d1\u202c:...").
+_INVISIBLE_RE = re.compile(r"[\u200b-\u200f\u202a-\u202e\u2060\ufeff]")
+_QUOTE_BLOCK_RE = re.compile(r"<!--\s*wp:quote\b.*?<!--\s*/wp:quote\s*-->", re.S)
+_CITE_RE = re.compile(r"<cite\b[^>]*>(.*?)</cite>", re.S)
+_P_RE = re.compile(r"<p\b[^>]*>(.*?)</p>", re.S)
+_BLOCKQUOTE_OPEN_RE = re.compile(r"<blockquote\b[^>]*>")
+
+
+def is_scripture_reference(html):
+    """True if this bit of HTML is nothing but a Bible reference."""
+    text = re.sub(r"<[^>]+>", " ", html or "").replace("&nbsp;", " ").replace("\xa0", " ")
+    text = _INVISIBLE_RE.sub("", text)
+    return bool(_SCRIPTURE_REF.match(re.sub(r"\s+", " ", text).strip()))
+
+
+def scripture_reference_first(content):
+    """Read each quote block's Bible reference before the passage (the site
+    shows it under the quote): the reference is taken out of its citation and
+    put at the start of the passage's first paragraph, so the two always land
+    in the same narrated chunk ("John 10:10 NIV The thief comes...", which
+    Bible-mode cleanup reads as "John 10, verse 10, New International Version.
+    The thief comes..."). On its own line it could merge into the paragraph
+    before the quote instead, with the pause between it and the verse.
+
+    The citation is the block's <cite>, or, when there is none, a last
+    paragraph that is only a reference. A citation that isn't a Bible
+    reference (a person, a book) stays after its quote, and a passage spread
+    over several paragraphs gets its reference at the start of the first."""
+    def move(match):
+        block = match.group(0)
+        if not _BLOCKQUOTE_OPEN_RE.search(block):
+            return block
+        cite = _CITE_RE.search(block)
+        if cite:
+            if not is_scripture_reference(cite.group(1)):
+                return block
+            ref = cite
+        else:
+            paras = list(_P_RE.finditer(block))
+            if len(paras) < 2 or not is_scripture_reference(paras[-1].group(1)):
+                return block
+            ref = paras[-1]
+        text = _INVISIBLE_RE.sub("", re.sub(r"<[^>]+>", " ", ref.group(1)).replace("&nbsp;", " ").replace("\xa0", " "))
+        text = re.sub(r"\s+", " ", text).strip().lstrip("\u2014\u2013-~( ")   # "— Luke 15:11", "(John 3:16)"
+        if text.endswith(")") and text.count(")") > text.count("("):
+            text = text[:-1].rstrip()
+        block = block[:ref.start()] + block[ref.end():]
+        first = _P_RE.search(block)
+        if first:
+            at = first.start(1)
+            return block[:at] + text + " " + block[at:]
+        opening = _BLOCKQUOTE_OPEN_RE.search(block)
+        return block[:opening.end()] + f"<p>{text}</p>" + block[opening.end():]
+    return _QUOTE_BLOCK_RE.sub(move, content or "")
+
 _SKIP_TAGS = {"figure", "img", "iframe", "script", "style", "svg", "noscript",
               "button", "table", "form", "video", "audio", "object", "select",
               "textarea"}
@@ -220,11 +300,15 @@ class _Narration(HTMLParser):
             self._buf.append(data)
 
 
-def post_markdown(title, content, stop_at_headings=(), skip_sections=()):
+def post_markdown(title, content, stop_at_headings=(), skip_sections=(), scripture_first=False):
     """A post's block HTML as the Markdown the importer takes: "# Title" first
     (the parser's title line), then one line per paragraph, heading (h2 = a
-    chapter), list item or quote citation."""
-    html = content or ""
+    chapter), list item or quote citation.
+
+    scripture_first: read each quote's Bible reference before the passage
+    (scripture_reference_first). Narration uses it; the text hashes don't, so
+    they keep matching the narrations made before it existed."""
+    html = scripture_reference_first(content) if scripture_first else (content or "")
     while True:
         stripped = _BLOCK_RE.sub("", html)
         if stripped == html:
@@ -379,10 +463,13 @@ class Backfill:
                 return int(post_id), entry    # state keys are strings
         return None
 
-    def _markdown(self, post):
+    def _markdown(self, post, scripture_first=False):
+        """The post as the text it's read from. As published (the default) for
+        word counts and text hashes; scripture_first for what's narrated."""
         return post_markdown(post["post_title"], post["content"],
                              self.cfg.get("stop_at_headings") or ["Next step"],
-                             self.cfg.get("skip_sections") or [])
+                             self.cfg.get("skip_sections") or [],
+                             scripture_first=scripture_first)
 
     def _entry(self, post_id):
         return self.state["posts"].setdefault(str(post_id), {})
@@ -502,7 +589,9 @@ class Backfill:
         entry = self._entry(post_id)
         payload = {
             "name": post["post_title"],
-            "raw_text": markdown,
+            # Read with each scripture reference before its passage. `markdown`
+            # (as published) still supplies the word count and text_hash below.
+            "raw_text": self._markdown(post, scripture_first=True),
             "source": {"kind": "wordpress_post", "post_id": post_id,
                        "url": post.get("permalink")},
         }
@@ -851,7 +940,7 @@ def main():
         post = bf.pub.post_for_narration(args.text)
         print(post_markdown(post["post_title"], post["content"],
                             cfg.get("stop_at_headings") or ["Next step"],
-                            cfg.get("skip_sections") or []))
+                            cfg.get("skip_sections") or [], scripture_first=True))
         return
     if not cfg.get("enabled"):
         # A clean exit, so launchd (KeepAlive: SuccessfulExit false) leaves it

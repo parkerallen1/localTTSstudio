@@ -98,7 +98,8 @@ check("title line first", lines[0], "# Strong in Body")
 check("h4 kept as a heading", "#### key takeaways" in lines, True)
 check("list item, nbsp trimmed", "- Recognize your body matters to God — our physical “strength” is part of it." in lines, True)
 check("quote text", "The spirit indeed is willing, but the flesh is weak." in lines, True)
-check("citation read after the quote", "Matthew 26:41 AMPC" in lines, True)
+check("as published: citation after the quote (text hashes use this)",
+      lines.index("Matthew 26:41 AMPC") == lines.index("The spirit indeed is willing, but the flesh is weak.") + 1, True)
 check("h2 is a chapter heading", "## What Jobs understood" in lines, True)
 check("link text kept, br is a space", "I developed Hashimoto’s disease, which affects the thyroid." in lines, True)
 check("nested list: parent text", "- For more, check out our two articles:" in lines, True)
@@ -119,6 +120,57 @@ check("leftover shortcodes dropped",
       post_markdown("T", "<p>[fusion_text]Hello there[/fusion_text]</p>", []), "# T\n\nHello there")
 check("no stop heading reads to the end",
       post_markdown("T", "<h2>Next week</h2><p>More.</p>", ["Next step"]), "# T\n\n## Next week\n\nMore.")
+
+print("\n--- scripture reference read first ---")
+first = post_markdown("Strong in Body", POST, ["Next step"], scripture_first=True).split("\n\n")
+check("reference starts the passage", "Matthew 26:41 AMPC The spirit indeed is willing, but the flesh is weak." in first, True)
+check("reference no longer read after it", "Matthew 26:41 AMPC" in first, False)
+check("nothing else moves",
+      [l for l in first if "Matthew 26:41" not in l],
+      [l for l in lines if l not in ("Matthew 26:41 AMPC", "The spirit indeed is willing, but the flesh is weak.")])
+
+
+def quote(inner):
+    return f'<!-- wp:quote -->\n<blockquote class="wp-block-quote">{inner}</blockquote>\n<!-- /wp:quote -->'
+
+
+def narrated(html):
+    return post_markdown("T", html, [], scripture_first=True).split("\n\n")[1:]
+
+
+check("passage over several paragraphs: reference before the first",
+      narrated(quote("<p>Verse one.</p><p>Verse two.</p><cite>Psalm 139:9-12 NIV</cite>")),
+      ["Psalm 139:9-12 NIV Verse one.", "Verse two."])
+check("a person's attribution stays after the quote",
+      narrated(quote("<p>Ask not.</p><cite>John F. Kennedy, Profiles in Courage</cite>")),
+      ["Ask not.", "John F. Kennedy, Profiles in Courage"])
+check("no cite: a closing reference paragraph moves up",
+      narrated(quote("<p>Some seeds fell on a footpath.</p><p>— Matthew 13:1-4 NLT</p>")),
+      ["Matthew 13:1-4 NLT Some seeds fell on a footpath."])
+check("no cite and no reference: untouched", narrated(quote("<p>One.</p><p>Two.</p>")), ["One.", "Two."])
+check("text around the quote stays put",
+      narrated("<p>Before.</p>" + quote("<p>Verse.</p><cite>John 10:10 NIV</cite>") + "<p>After.</p>"),
+      ["Before.", "John 10:10 NIV Verse.", "After."])
+check("edition note kept whole",
+      narrated(quote("<p>Verse.</p><cite>Hebrews 7:24-25 NIV (1984)</cite>")), ["Hebrews 7:24-25 NIV (1984) Verse."])
+check("parenthesized reference loses its brackets",
+      narrated(quote("<p>Verse.</p><cite>(Proverbs 18:14 NIrV)</cite>")), ["Proverbs 18:14 NIrV Verse."])
+check("invisible characters dropped",
+      narrated(quote("<p>Verse.</p><cite>\u202dJames\u202c \u202d1:5\u202c MSG</cite>")), ["James 1:5 MSG Verse."])
+for ref in ("Psalm 63:1-3 NIV", "Matthew 7:3–5 AMP", "Genesis 32:24,28 NIV", "Psalm 46:1-3 NASB95",
+            "Matthew 10:30-31 Voice", "1 Corinthians 1:18 NIrV", "2 Samuel 15:31 NIV", "Ephesians 4:27 AMP\xa0",
+            "Acts 12:24 VOICE", "— Luke 11:34 Voice", "(Proverbs 18:14 NIrV)", "Matthew 6:6 The Message",
+            "Song of Songs 2:4 ESV", "Psalm 23", "Isaiah 38:17 - The Voice", "Hebrews 7:24-25 NIV (1984)",
+            "2 Corinthians 1:6 and 8-9 NIV", "Luke 8:11;13 NLT", "I Timothy 1:5 MSG", "II Kings 6:30 NIV",
+            "1 Cor 11:1 NIV", "Proverbs 3.3-5 NIV", "Matthew12:20 TLB", "PSALM 10:1 TPT",
+            "Acts 2:25 - New International Reader's Version", "Isaiah 29:15 - Easy-to-Read Version",
+            "\u202d\u202dJames\u202c \u202d1\u202c:\u202d5-8\u202c MSG", "\u200b\u200bPsalm 103:8 Voice",
+            "Romans 8:28-29 Voice\ufeff"):
+    check(f"is a reference: {ref!r}", wp_backfill.is_scripture_reference(ref), True)
+for text in ("John F. Kennedy, Profiles in Courage", "Norman Podhoretz", "Mark Twain", "Read Psalm 23 slowly.",
+             "The Lord is my shepherd. Psalm 23:1 NIV", "Psalm 23 reminds us that God is near.", "Steve Jobs",
+             "James Clear, Atomic Habits", "Daniel Goleman, Emotional Intelligence", "Job interview tips"):
+    check(f"not a reference: {text!r}", wp_backfill.is_scripture_reference(text), False)
 
 print("\n--- the queue ---")
 wp_backfill.STATE_FILE = tempfile.mktemp(suffix=".json")
@@ -187,6 +239,16 @@ bf.poll()
 check("starts the newest candidate", bf.state["current"], 1)
 check("imports the post text with a title line", bf.imports[0]["raw_text"].startswith("# Post 1"), True)
 check("records where it came from", bf.imports[0]["source"]["kind"], "wordpress_post")
+
+QUOTED = LONG + quote("<p>Verse text.</p><cite>John 3:16 NIV</cite>")
+bq = make()
+plain = bq.pub.post_for_narration
+bq.pub.post_for_narration = lambda pid: {**plain(pid), "content": QUOTED}
+bq.poll()
+raw = bq.imports[0]["raw_text"]
+check("narrated text: reference before the verse", raw.index("John 3:16 NIV") < raw.index("Verse text."), True)
+check("text hash still taken from the as-published order", bq.state["posts"]["1"]["text_hash"],
+      wp_backfill._sha(post_markdown("Post 1", QUOTED, ["Next step"], [])))
 bf.project_status = "generating"
 bf.poll()
 check("still generating: nothing published", bf.pub.published, [])
