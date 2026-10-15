@@ -620,5 +620,52 @@ def old_app_get(url, **kw):
 wp_backfill.requests.get = old_app_get
 check("falls back to project status on an older app", wp_backfill.app_busy("http://app", {}), True)
 
+print("\n--- queue entry stuck on a hash from an earlier save ---")
+# Like ttsQueue.ts ackResult: an ack closes the entry only if its hash matches.
+real = {"items": [], "acks": []}
+def strict_request(method, url, json=None, **kw):
+    if method == "GET":
+        payload = {"ok": True, "now": clock["t"] * 1000, "items": [dict(i) for i in real["items"]]}
+    else:
+        real["acks"].append(json)
+        it = next(i for i in real["items"] if i["postId"] == json["postId"])
+        if it["contentHash"] != json["contentHash"]:
+            payload = {"ok": True, "result": "stale"}
+        else:
+            real["items"].remove(it)
+            payload = {"ok": True, "result": "done"}
+        for f in real.get("on_ack", []):
+            f()
+    return types.SimpleNamespace(raise_for_status=lambda: None, json=lambda: payload)
+wp_backfill.requests.request = strict_request
+
+def stuck():
+    bf = make_r()
+    # The post's text is what was narrated; the queue still has an older save's hash.
+    bf.pub.content = {9: TEXT_V1}
+    bf.pub.text_hash_meta = {9: sha(wp_backfill.post_markdown("Post 9", TEXT_V1, ["Next step"]))}
+    real["items"] = [{"postId": 9, "contentHash": sha(TEXT_V2), "title": "Post 9", "lastSavedAt": 5000}]
+    real["acks"], real["on_ack"] = [], []
+    bf._queue_at = 0
+    return bf
+
+bf = stuck()
+bf.poll()
+check("earlier-save hash: closed", real["items"], [])
+check("earlier-save hash: first ack with what it read, then the queue's",
+      [a["contentHash"] for a in real["acks"]], [sha(TEXT_V1), sha(TEXT_V2)])
+check("earlier-save hash: outcome kept", real["acks"][-1]["outcome"], "unchanged")
+
+bf = stuck()
+def saved_meanwhile():          # a real save lands right after the first ack
+    if len(real["acks"]) == 1:
+        real["items"][0].update(contentHash=sha("third"), lastSavedAt=6000)
+real["on_ack"] = [saved_meanwhile]
+bf.poll()
+check("saved meanwhile: stays queued", [i["contentHash"] for i in real["items"]], [sha("third")])
+check("saved meanwhile: no second ack", len(real["acks"]), 1)
+
+wp_backfill.requests.request = fake_request
+
 print(f"\n{len(PASS)} passed, {len(FAIL)} failed")
 sys.exit(1 if FAIL else 0)

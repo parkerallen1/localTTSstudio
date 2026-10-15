@@ -771,7 +771,8 @@ class Backfill:
             since = max(0.0, (data["now"] - (item.get("lastSavedAt") or 0)) / 1000)
             self._renarrate[pid] = {"content_hash": item.get("contentHash"),
                                     "title": item.get("title"), "from": "queue",
-                                    "ready_at": _now() + max(0.0, quiet - since)}
+                                    "ready_at": _now() + max(0.0, quiet - since),
+                                    "saved_at": item.get("lastSavedAt")}
         self._queued = queued
         for pid in [p for p, i in self._renarrate.items()
                     if i["from"] == "queue" and p not in queued]:
@@ -871,7 +872,7 @@ class Backfill:
             return
         content_hash = _sha(post.get("content") or "")
         if post.get("post_status") != "publish" or not post.get("audio_id"):
-            return self._ack(post_id, content_hash, "skipped", "not published, or no narration of its own")
+            return self._ack(post_id, content_hash, "skipped", "not published, or no narration of its own", seen_saved_at=item.get("saved_at"))
         markdown = self._markdown(post)
         text_hash = _sha(markdown)
         if post.get("text_hash_meta") == text_hash and not item.get("force"):
@@ -884,16 +885,17 @@ class Backfill:
                 return
             log(f"\"{post['post_title']}\" was edited, but not the text it's read from — "
                 f"keeping its narration.")
-            return self._ack(post_id, content_hash, "unchanged")
+            return self._ack(post_id, content_hash, "unchanged", seen_saved_at=item.get("saved_at"))
         if len(markdown.split()) < MIN_WORDS:
-            return self._ack(post_id, content_hash, "skipped", "too little text to narrate")
+            return self._ack(post_id, content_hash, "skipped", "too little text to narrate", seen_saved_at=item.get("saved_at"))
         entry = self._entry(post_id)
         prev = entry.get("status")
         entry["title"] = html.unescape(post["post_title"])
         entry["prev_status"] = prev if prev in _TERMINAL + (RENARRATED,) else None
         entry["upload_attempts"] = 0
         try:
-            self._import(post_id, post, markdown, kind="renarrate", expect_audio=post["audio_id"])
+            self._import(post_id, post, markdown, kind="renarrate", expect_audio=post["audio_id"],
+                         queue_saved_at=item.get("saved_at"))
         except requests.RequestException as e:
             entry.pop("prev_status", None)
             log(f"Couldn't import \"{title}\" to re-narrate it: {e} — trying again later.", "warn")
@@ -910,6 +912,7 @@ class Backfill:
             entry["renarrations"] = int(entry.get("renarrations", 0)) + 1
         else:
             entry["status"] = prev or RENARRATED
+        seen_saved_at = entry.pop("queue_saved_at", None)
         for k in ("kind", "expect_audio", "retry_at"):
             entry.pop(k, None)
         entry["renarrated_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
@@ -920,9 +923,9 @@ class Backfill:
         if str(self.state.get("current")) == str(post_id):
             self.state["current"] = None
         save_state(self.state)
-        self._ack(int(post_id), entry.get("content_hash") or "", outcome, note)
+        self._ack(int(post_id), entry.get("content_hash") or "", outcome, note, seen_saved_at)
 
-    def _ack(self, post_id, content_hash, outcome, note=None):
+    def _ack(self, post_id, content_hash, outcome, note=None, seen_saved_at=None):
         item = self._renarrate.pop(post_id, None) or {}
         self._backoff.pop(post_id, None)
         forced = self.state.get("force_renarrate") or []
@@ -939,8 +942,41 @@ class Backfill:
             # acks as unchanged next time.
             log(f"Couldn't ack post {post_id} on the re-narration queue: {e}", "warn")
             return
-        if r.get("result") == "stale":
+        if r.get("result") == "stale" and not self._ack_earlier_save(
+                post_id, content_hash, outcome, note, seen_saved_at):
             log(f"Post {post_id} was saved again meanwhile — it stays queued.")
+
+    def _ack_earlier_save(self, post_id, content_hash, outcome, note, seen_saved_at):
+        """A stale ack can also mean the queue's hash is from a save BEFORE the
+        one we read: WordPress queues a save only when its content differs from
+        the narration's, so a later save back to narrated content (or a queue
+        call WordPress dropped — they're fire-and-forget) leaves the entry on an
+        old hash that no read of the post will ever match. Acked by hash alone,
+        it came back every few minutes forever (Big Little Lies, Oct 2026).
+
+        If the entry hasn't been saved since the read it was acked from
+        (lastSavedAt unchanged since before that read), ack it with its own
+        hash. A save in between changes that hash, so the server still calls
+        that stale and the entry stays queued. Returns whether it closed."""
+        if seen_saved_at is None:
+            return False
+        try:
+            data = self._queue_request("GET")
+            entry = next((i for i in data.get("items", []) if int(i["postId"]) == post_id), None)
+            if not entry or entry.get("lastSavedAt") != seen_saved_at \
+                    or not entry.get("contentHash") or entry["contentHash"] == content_hash:
+                return False
+            r = self._queue_request("POST", json={
+                "postId": post_id, "contentHash": entry["contentHash"], "outcome": outcome,
+                "note": ((note + "; ") if note else "") + "queued hash was from an earlier save"})
+        except (requests.RequestException, ValueError, KeyError) as e:
+            log(f"Couldn't re-check post {post_id} on the re-narration queue: {e}", "warn")
+            return False
+        if r.get("result") != "done":
+            return False
+        log(f"Post {post_id}: the queue held a hash from a save before the one read — "
+            f"closed it ({outcome}).")
+        return True
 
 
 def print_status():
