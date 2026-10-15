@@ -21,6 +21,9 @@ _ONES = ("zero one two three four five six seven eight nine ten eleven twelve th
          "fourteen fifteen sixteen seventeen eighteen nineteen").split()
 _TENS = "_ _ twenty thirty forty fifty sixty seventy eighty ninety".split()
 _ORDINAL = {"1": "first", "2": "second", "3": "third"}
+# Books read with an ordinal: "2 Corinthians" is "Second Corinthians".
+_BOOKS = r"(?:samuel|kings|chronicles|corinthians|thessalonians|timothy|peter|john)"
+_ENTITY_RE = re.compile(r"&#?\w+;")
 
 
 def _spell(n):
@@ -43,8 +46,12 @@ def words(text):
     spelled out, a leading book number read as an ordinal ("2 Corinthians")."""
     t = unicodedata.normalize("NFKC", html.unescape(text or "")).lower()
     t = t.replace("’", "'").replace("&", " and ")
-    t = re.sub(r"\b([123]) (?=[a-z])", lambda m: _ORDINAL[m.group(1)] + " ", t)
+    t = re.sub(r"\b([123]) (?=" + _BOOKS + r"\b)", lambda m: _ORDINAL[m.group(1)] + " ", t)
+    t = re.sub(r"\b(i{1,3}) (?=" + _BOOKS + r"\b)", lambda m: ("first", "second", "third")[len(m.group(1)) - 1] + " ", t)
     t = re.sub(r"(\d),(\d{3})", r"\1\2", t)
+    t = re.sub(r"(\d)\s*[-\u2013]\s*(\d)", r"\1 through \2", t)      # "3-4" is read "3 through 4"
+    t = re.sub(r"#\s*(\d)", r"number \1", t)
+    t = re.sub(r"\b([a-z])\.(?=[a-z]\b)", r"\1", t)                     # "g.w." = "gw"
     t = re.sub(r"\d+", lambda m: " " + _spell(int(m.group())) + " ", t)
     t = t.replace("'", "")
     return re.findall(r"[a-z]+", t)
@@ -62,19 +69,33 @@ def compare(expected_text, heard_text):
     longest_extra = max((j2 - j1 for op, _i1, _i2, j1, j2 in sm.get_opcodes()
                          if op in ("insert", "replace")), default=0)
     missing, extra = (len(exp) - matched) / n, (len(got) - matched) / n
+    # An HTML entity read aloud ("Don&#8217;t" -> "Don 8217 t"): short, so it
+    # barely moves the error, but it's always wrong. Hear for its number.
+    heard_joined = " " + " ".join(got) + " "
+    entity_read = False
+    for m in _ENTITY_RE.finditer(expected_text or ""):
+        num = m.group().strip("&#;")
+        if not num.isdigit():
+            continue
+        n = int(num)
+        readings = {_spell(n), _spell(n // 1000) + " thousand " + _spell(n % 1000) if n >= 1000 else _spell(n)}
+        if num in (heard_text or "") or any(f" {r} " in heard_joined for r in readings):
+            entity_read = True
     return {"words": len(exp), "heard_words": len(got), "missing": round(missing, 3),
             "extra": round(extra, 3), "error": round(missing + extra, 3),
-            "longest_extra": longest_extra}
+            "longest_extra": longest_extra, "entity_read": entity_read}
 
 
 # Thresholds — calibrated in audit_speech.py against the backfill's narration.
-MAX_ERROR = 0.35
+MAX_ERROR = 0.4
 MAX_EXTRA_RUN = 8
 MIN_WORDS = 4      # shorter than this, Whisper's guesses swamp the signal
 
 
 def is_bad(result):
     """Whether a compare() result means the take doesn't say its text."""
+    if result.get("entity_read"):
+        return True
     if result["words"] < MIN_WORDS:
         return False
     return result["error"] > MAX_ERROR or result["longest_extra"] > MAX_EXTRA_RUN

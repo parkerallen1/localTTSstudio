@@ -104,7 +104,9 @@ def run(sample=None):
 
 
 def write_report():
-    results = list(load_results().values())
+    # Scored again from the saved transcripts, so the current speech_check
+    # rules always apply — no transcribing again after a threshold change.
+    results = [{**r, **speech_check.compare(r["text"], r["heard"])} for r in load_results().values()]
     bad = [r for r in results if speech_check.is_bad(r)]
     bad.sort(key=lambda r: (-r["error"], -r["longest_extra"]))
     posts = {}
@@ -113,7 +115,7 @@ def write_report():
     lines = [f"# Speech audit — {datetime.now():%Y-%m-%d %H:%M}", "",
              f"{len(results)} paragraph takes checked; **{len(bad)} flagged** in "
              f"**{len(posts)} posts** (error > {speech_check.MAX_ERROR} or a run of more than "
-             f"{speech_check.MAX_EXTRA_RUN} words not in the text).", "",
+             f"{speech_check.MAX_EXTRA_RUN} words not in the text, or an HTML entity read aloud).", "",
              "`error` ≈ word error rate against the text; `run` = longest stretch of words heard "
              "that aren't in it. Full transcripts are in results.jsonl.", ""]
     for (post_id, name, url), rs in sorted(posts.items(), key=lambda kv: -max(r["error"] for r in kv[1])):
@@ -122,7 +124,8 @@ def write_report():
         lines.append("")
         for r in sorted(rs, key=lambda r: r["para"]):
             at = f"{int(r['at'] // 60)}:{int(r['at'] % 60):02}"
-            lines.append(f"- **¶{r['para']} at {at}** — error {r['error']}, run {r['longest_extra']}, "
+            why = "HTML entity read aloud; " if r.get("entity_read") else ""
+            lines.append(f"- **¶{r['para']} at {at}** — {why}error {r['error']}, run {r['longest_extra']}, "
                          f"{r['seconds']}s for {r['words']} words")
             lines.append(f"  - text: {r['text'][:300]}")
             lines.append(f"  - heard: {r['heard'][:300]}")
