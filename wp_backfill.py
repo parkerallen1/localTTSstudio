@@ -589,7 +589,7 @@ class Backfill:
         markdown = self._markdown(post)
         words = len(markdown.split())
         if words < MIN_WORDS:
-            log(f"\"{post['post_title']}\" is only {words} words once embeds are "
+            log(f"\"{html.unescape(post['post_title'])}\" is only {words} words once embeds are "
                 f"left out — skipping.", "warn")
             return self._finish(post_id, "skipped", f"only {words} words of text")
         self._import(post_id, post, markdown)
@@ -626,7 +626,7 @@ class Backfill:
         self.state["current"] = post_id
         save_state(self.state)
         verb = "Re-narrating" if extra.get("kind") == "renarrate" else "Narrating"
-        log(f"{verb} \"{post['post_title']}\" (post {post_id}, {entry['words']} words, "
+        log(f"{verb} \"{html.unescape(post['post_title'])}\" (post {post_id}, {entry['words']} words, "
             f"{result.get('para_count')} paragraphs).", "ok")
 
     def check_current(self):
@@ -890,7 +890,7 @@ class Backfill:
                 log(f"Couldn't update the hashes for \"{title}\": {e} — trying again later.", "warn")
                 self._backoff[post_id] = _now() + RENARRATE_BACKOFF
                 return
-            log(f"\"{post['post_title']}\" was edited, but not the text it's read from — "
+            log(f"\"{html.unescape(post['post_title'])}\" was edited, but not the text it's read from — "
                 f"keeping its narration.")
             return self._ack(post_id, content_hash, "unchanged", seen_saved_at=item.get("saved_at"))
         if len(markdown.split()) < MIN_WORDS:
