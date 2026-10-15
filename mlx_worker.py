@@ -71,9 +71,17 @@ def _generate(req):
 
 def _transcribe(req):
     import mlx_whisper      # only when asked: generation-only setups needn't have it
+    from scipy.signal import resample_poly
     t0 = time.monotonic()
+    # Decoded here rather than by mlx_whisper, which shells out to ffmpeg —
+    # not on PATH under launchd. Whisper wants 16 kHz mono float32.
+    audio, sr = sf.read(req["audio"], dtype="float32", always_2d=True)
+    audio = audio.mean(axis=1)
+    if sr != 16000:
+        g = np.gcd(sr, 16000)
+        audio = resample_poly(audio, 16000 // g, sr // g).astype(np.float32)
     # mlx_whisper keeps the loaded model between calls (ModelHolder).
-    r = mlx_whisper.transcribe(req["audio"], path_or_hf_repo=WHISPER, language="en",
+    r = mlx_whisper.transcribe(audio, path_or_hf_repo=WHISPER, language="en",
                                condition_on_previous_text=False)
     return {"ok": True, "text": r["text"].strip(), "wall": round(time.monotonic() - t0, 2)}
 
