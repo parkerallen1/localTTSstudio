@@ -4,6 +4,7 @@ a fake app and a fake WordPress. Touches nothing live.
 
     ./venv/bin/python test_wp_backfill.py
 """
+import os
 import sys
 import tempfile
 import types
@@ -175,6 +176,7 @@ for text in ("John F. Kennedy, Profiles in Courage", "Norman Podhoretz", "Mark T
 print("\n--- the queue ---")
 wp_backfill.STATE_FILE = tempfile.mktemp(suffix=".json")
 doc_watcher.PUBLISH_LOG = tempfile.mktemp(suffix=".jsonl")
+wp_backfill.RENARRATE_REQUESTS = tempfile.mktemp(suffix=".json")
 LONG = "<p>" + " ".join(["word"] * 200) + "</p>"
 
 
@@ -427,6 +429,25 @@ def make_r():
     queue["acks"].clear()
     return bf
 
+
+print("\n--- --renarrate: a bad take, text unchanged ---")
+bf = make_r()
+bf.pub.text_hash_meta = {9: sha(wp_backfill.post_markdown("Post 9", TEXT_V2, ["Next step"]))}
+queue["items"] = []
+with open(wp_backfill.RENARRATE_REQUESTS, "w") as f:
+    _json.dump([9], f)
+bf.poll()
+check("forced: re-narrates though the text is unchanged", bf.state["current"], 9)
+check("forced: request file consumed", os.path.exists(wp_backfill.RENARRATE_REQUESTS), False)
+check("forced: kept in the state until it ends", bf.state["force_renarrate"], [9])
+bf.poll()
+check("forced: replaces the narration it saw", bf.pub.publish_kw["expect_audio"], 77)
+check("forced: nothing to ack on the queue", queue["acks"], [])
+check("forced: cleared once done", bf.state["force_renarrate"], [])
+check("forced: marked re-narrated", bf.state["posts"]["9"]["renarration_outcome"], "renarrated")
+bf._queue_at = 0
+bf.poll()
+check("forced: doesn't come back", bf.state["current"], None)
 
 bf = make_r()
 queue["items"] = [{"postId": 9, "contentHash": sha(TEXT_V2), "title": "Post 9",

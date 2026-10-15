@@ -98,6 +98,9 @@ from doc_watcher import Watcher, _append_publish_log, _audio_filename, load_json
 from wp_publisher import WordPressError, WordPressSkip
 
 STATE_FILE = os.path.join(doc_watcher.DEFAULT_DIR, "wp_backfill_state.json")
+# Post ids from `--renarrate`, waiting for the running backfill to pick them up.
+# A file of its own because the backfill owns STATE_FILE and rewrites it.
+RENARRATE_REQUESTS = os.path.join(doc_watcher.DEFAULT_DIR, "wp_backfill_renarrate.json")
 POLL_SECONDS = 60
 # Re-read the candidate list at most this often — each read is a ~25s wp-cli
 # call, and the back catalogue doesn't change minute to minute.
@@ -396,6 +399,7 @@ class Backfill:
         # post id -> {content_hash, title, ready_at, from}; rebuilt from the
         # queue each QUEUE_POLL, so it's not saved.
         self._renarrate = {}
+        self._queued = set()        # post ids on ds-backend's queue at the last read
         self._queue_at, self._sweep_at = 0, 0
         self._backoff = {}
 
@@ -768,13 +772,36 @@ class Backfill:
             self._renarrate[pid] = {"content_hash": item.get("contentHash"),
                                     "title": item.get("title"), "from": "queue",
                                     "ready_at": _now() + max(0.0, quiet - since)}
+        self._queued = queued
         for pid in [p for p, i in self._renarrate.items()
                     if i["from"] == "queue" and p not in queued]:
             del self._renarrate[pid]      # acked, or done elsewhere
 
+    def take_requests(self):
+        """Move `--renarrate` requests into the state, where they last until
+        that re-narration ends."""
+        try:
+            ids = load_json(RENARRATE_REQUESTS, []) or []
+            os.remove(RENARRATE_REQUESTS)
+        except FileNotFoundError:
+            ids = []
+        forced = self.state.setdefault("force_renarrate", [])
+        for pid in ids:
+            if int(pid) not in forced:
+                forced.append(int(pid))
+                log(f"Re-narration of post {pid} requested by hand.")
+        if ids:
+            save_state(self.state)
+        for pid in forced:
+            # Read again even when its text hasn't changed: the point is
+            # usually a bad take, not an edit.
+            self._renarrate.setdefault(pid, {"content_hash": None, "title": None, "from": "manual",
+                                             "force": True, "ready_at": 0})
+
     def due_renarration(self):
         if _now() - self._queue_at > QUEUE_POLL:
             self.refresh_queue()
+        self.take_requests()
         now = _now()
         for pid, item in sorted(self._renarrate.items(), key=lambda kv: kv[1]["ready_at"]):
             status = self.state["posts"].get(str(pid), {}).get("status")
@@ -847,7 +874,7 @@ class Backfill:
             return self._ack(post_id, content_hash, "skipped", "not published, or no narration of its own")
         markdown = self._markdown(post)
         text_hash = _sha(markdown)
-        if post.get("text_hash_meta") == text_hash:
+        if post.get("text_hash_meta") == text_hash and not item.get("force"):
             try:
                 self.pub.set_narration_hashes([{"ID": post_id, "content_hash": content_hash,
                                                 "text_hash": text_hash}])
@@ -896,8 +923,14 @@ class Backfill:
         self._ack(int(post_id), entry.get("content_hash") or "", outcome, note)
 
     def _ack(self, post_id, content_hash, outcome, note=None):
-        self._renarrate.pop(post_id, None)
+        item = self._renarrate.pop(post_id, None) or {}
         self._backoff.pop(post_id, None)
+        forced = self.state.get("force_renarrate") or []
+        if post_id in forced:
+            forced.remove(post_id)
+            save_state(self.state)
+        if item.get("from") == "manual" and post_id not in self._queued:
+            return                      # nothing on ds-backend's queue to ack
         try:
             r = self._queue_request("POST", json={"postId": post_id, "contentHash": content_hash,
                                                   "outcome": outcome, "note": note or ""})
@@ -933,20 +966,30 @@ def main():
     ap.add_argument("--text", type=int, metavar="POST_ID",
                     help="print the text a post would be narrated from, and exit")
     ap.add_argument("--once", action="store_true", help="one poll, then exit")
+    ap.add_argument("--renarrate", type=int, metavar="POST_ID", action="append",
+                    help="narrate a post again even if its text hasn't changed (e.g. a bad "
+                         "take); the running backfill picks it up and replaces the audio")
     args = ap.parse_args()
 
     if args.status:
         return print_status()
+    if args.renarrate:
+        ids = load_json(RENARRATE_REQUESTS, []) or []
+        ids += [pid for pid in args.renarrate if pid not in ids]
+        tmp = RENARRATE_REQUESTS + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(ids, f)
+        os.replace(tmp, RENARRATE_REQUESTS)
+        print(f"Requested: {', '.join(map(str, ids))}. The backfill takes them when it's next idle "
+              f"(it needs re_narration.enabled) and replaces each post's audio.")
+        return
     config = load_json(args.config, None)
     if config is None:
         sys.exit(f"Config not found or invalid: {args.config}")
     cfg = config.get("backfill") or {}
     if args.text:
         bf = Backfill(config)
-        post = bf.pub.post_for_narration(args.text)
-        print(post_markdown(post["post_title"], post["content"],
-                            cfg.get("stop_at_headings") or ["Next step"],
-                            cfg.get("skip_sections") or [], scripture_first=True))
+        print(bf._markdown(bf.pub.post_for_narration(args.text), scripture_first=True))
         return
     if not cfg.get("enabled"):
         # A clean exit, so launchd (KeepAlive: SuccessfulExit false) leaves it
