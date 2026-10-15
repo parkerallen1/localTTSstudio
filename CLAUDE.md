@@ -37,6 +37,8 @@ FLAC under the project → user downloads a merged WAV/M4A via `/api/merge` +
 | `static/style.css` | Dark glassmorphism theme. Shared tokens in `:root`. |
 | `static/publishes.html` | Standalone "Published" page (`/publishes`): what the doc watcher attached to WordPress, from `/api/wp_publishes`. |
 | `mlx_engine.py`, `mlx_worker.py` | MLX generation on Apple Silicon (8-bit Qwen3-TTS): the app side, and a worker process with its own venv (`requirements-mlx.txt` — mlx-audio's transformers pin conflicts with qwen-tts'). On when `QWEN_TTS_MLX_PYTHON` points at that venv's Python; otherwise PyTorch. |
+| `speech_check.py` | Does a take say its text? Normalizes Whisper's transcript and the paragraph, compares word by word. Headless imports (`_check_take` in `main.py`) regenerate takes that fail it, or that run far too long for their text (a runaway: the model missed its end-of-speech token). |
+| `audit_speech.py` | The same check over every narrated paragraph already published (MLX venv; resumable, ~5 h for the backfill). Writes `data/speech_audit/results.jsonl` + `report.md`. |
 | `LocalTTSStudio.spec` | PyInstaller build spec for the `.app`. |
 | `text_parser.py` | Python port of the frontend's Markdown→paragraphs pipeline (keep in sync with `script.js`). Used by `/api/projects/import`. |
 | `doc_watcher.py` | Standalone Google Docs watcher: polls Drive for docs shared with a service account, imports them via `/api/projects/import`. Not bundled into the .app. |
