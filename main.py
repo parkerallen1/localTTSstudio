@@ -1420,6 +1420,24 @@ def _store_wav_as_flac(project_id: str, file_id: str, wav_bytes: bytes):
         with open(os.path.join(audio_dir, f"{file_id}.wav"), "wb") as f:
             f.write(wav_bytes)
 
+# A generation that misses its end-of-speech token keeps producing sound until
+# _max_new_tokens stops it — a minute of babble in the middle of an article.
+# Sampling is random, so a second try almost always ends where it should.
+# The limit is generous: against 18.5k backfilled paragraphs (citations, URLs
+# and verse numbers included) it flagged only the one real runaway, at 1.8x.
+RUNAWAY_ATTEMPTS = 3
+
+def _runaway_limit(text: str) -> float:
+    """Seconds of audio past which a paragraph's take is treated as a runaway."""
+    return 6 + max(0.6 * len(text.split()), 0.08 * len(text))
+
+def _wav_seconds(wav_bytes: bytes) -> float:
+    try:
+        info = sf.info(io.BytesIO(wav_bytes))
+        return info.frames / info.samplerate
+    except Exception:
+        return 0.0
+
 def _set_import_status(project_id: str, status: str):
     project = _load_project(project_id)
     if project:
@@ -1477,14 +1495,29 @@ async def _run_import_generation_locked(project_id: str, port: int):
             if para.get("hasAudio"):
                 continue
             form = dict(base_form, text=para["text"])
+            limit = _runaway_limit(para["text"])
             try:
-                resp = await asyncio.to_thread(
-                    requests.post, url, data=form, headers=headers, timeout=1800
-                )
-                if resp.status_code != 200:
-                    raise RuntimeError(f"generate returned {resp.status_code}: {resp.text[:120]}")
+                best = None  # (seconds, wav) — the shortest take, if every one runs away
+                for attempt in range(1, RUNAWAY_ATTEMPTS + 1):
+                    resp = await asyncio.to_thread(
+                        requests.post, url, data=form, headers=headers, timeout=1800
+                    )
+                    if resp.status_code != 200:
+                        raise RuntimeError(f"generate returned {resp.status_code}: {resp.text[:120]}")
+                    seconds = _wav_seconds(resp.content)
+                    if best is None or seconds < best[0]:
+                        best = (seconds, resp.content)
+                    if seconds <= limit or attempt == RUNAWAY_ATTEMPTS:
+                        break
+                    emit_log(f"Import \"{project['name']}\" [{i + 1}/{total}]: {seconds:.0f}s of audio "
+                             f"for {len(para['text'].split())} words (limit {limit:.0f}s) — looks like a "
+                             f"runaway, generating it again ({attempt}/{RUNAWAY_ATTEMPTS}).", "warn")
+                if best[0] > limit:
+                    # Still too long after every try: publishing a minute of babble
+                    # is worse than a gap, and a gap holds the narration back.
+                    raise RuntimeError(f"every take ran long (shortest {best[0]:.0f}s, limit {limit:.0f}s)")
                 await asyncio.to_thread(
-                    _store_wav_as_flac, project_id, f"{para['id']}-t1", resp.content
+                    _store_wav_as_flac, project_id, f"{para['id']}-t1", best[1]
                 )
             except Exception as e:
                 failures += 1
