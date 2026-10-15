@@ -76,6 +76,7 @@ import subprocess
 import time as _time
 import text_parser
 import mlx_engine
+import speech_check
 from collections import deque
 
 APP_VERSION = "3.8.8" # Current application version
@@ -1425,7 +1426,7 @@ def _store_wav_as_flac(project_id: str, file_id: str, wav_bytes: bytes):
 # Sampling is random, so a second try almost always ends where it should.
 # The limit is generous: against 18.5k backfilled paragraphs (citations, URLs
 # and verse numbers included) it flagged only the one real runaway, at 1.8x.
-RUNAWAY_ATTEMPTS = 3
+RUNAWAY_ATTEMPTS = 3   # tries per paragraph, shared by the runaway and speech checks
 
 def _runaway_limit(text: str) -> float:
     """Seconds of audio past which a paragraph's take is treated as a runaway."""
@@ -1437,6 +1438,36 @@ def _wav_seconds(wav_bytes: bytes) -> float:
         return info.frames / info.samplerate
     except Exception:
         return 0.0
+
+_speech_check_warned = False
+
+def _check_take(text: str, wav_bytes: bytes, limit: float):
+    """What's wrong with a take, if anything: (problem or None, rank). Lower
+    rank is better, so the best of several bad takes can be kept for the log.
+
+    Too long for its text = a runaway. Otherwise, with the MLX worker, the take
+    is transcribed and compared with the text (speech_check.py): garbled or
+    repeated words, skipped phrases. Without MLX, or if transcription fails,
+    only the length is checked — the check must never cost a narration."""
+    global _speech_check_warned
+    seconds = _wav_seconds(wav_bytes)
+    if seconds > limit:
+        return (f"{seconds:.0f}s of audio for {len(text.split())} words "
+                f"(limit {limit:.0f}s) — looks like a runaway"), (2, seconds)
+    if not mlx_engine.enabled():
+        return None, (0, 0)
+    try:
+        heard = mlx_engine.transcribe(wav_bytes)
+    except mlx_engine.MLXError as e:
+        if not _speech_check_warned:
+            emit_log(f"Speech check unavailable, checking length only: {e}", "warn")
+            _speech_check_warned = True
+        return None, (0, 0)
+    result = speech_check.compare(text, heard)
+    if speech_check.is_bad(result):
+        return (f"it doesn't say its text (error {result['error']}, {result['longest_extra']} "
+                f"stray words in a row; heard \"{heard[:120]}\")"), (1, result["error"])
+    return None, (0, result["error"])
 
 def _set_import_status(project_id: str, status: str):
     project = _load_project(project_id)
@@ -1497,27 +1528,28 @@ async def _run_import_generation_locked(project_id: str, port: int):
             form = dict(base_form, text=para["text"])
             limit = _runaway_limit(para["text"])
             try:
-                best = None  # (seconds, wav) — the shortest take, if every one runs away
+                best = None  # (rank, problem, wav) — the least bad take so far
                 for attempt in range(1, RUNAWAY_ATTEMPTS + 1):
                     resp = await asyncio.to_thread(
                         requests.post, url, data=form, headers=headers, timeout=1800
                     )
                     if resp.status_code != 200:
                         raise RuntimeError(f"generate returned {resp.status_code}: {resp.text[:120]}")
-                    seconds = _wav_seconds(resp.content)
-                    if best is None or seconds < best[0]:
-                        best = (seconds, resp.content)
-                    if seconds <= limit or attempt == RUNAWAY_ATTEMPTS:
+                    problem, rank = await asyncio.to_thread(
+                        _check_take, para["text"], resp.content, limit)
+                    if best is None or rank < best[0]:
+                        best = (rank, problem, resp.content)
+                    if problem is None or attempt == RUNAWAY_ATTEMPTS:
                         break
-                    emit_log(f"Import \"{project['name']}\" [{i + 1}/{total}]: {seconds:.0f}s of audio "
-                             f"for {len(para['text'].split())} words (limit {limit:.0f}s) — looks like a "
-                             f"runaway, generating it again ({attempt}/{RUNAWAY_ATTEMPTS}).", "warn")
-                if best[0] > limit:
-                    # Still too long after every try: publishing a minute of babble
-                    # is worse than a gap, and a gap holds the narration back.
-                    raise RuntimeError(f"every take ran long (shortest {best[0]:.0f}s, limit {limit:.0f}s)")
+                    emit_log(f"Import \"{project['name']}\" [{i + 1}/{total}]: {problem}, "
+                             f"generating it again ({attempt}/{RUNAWAY_ATTEMPTS}).", "warn")
+                if best[1]:
+                    # Bad after every try. Generation is random, so three bad
+                    # takes in a row is rare; publishing babble is worse than a
+                    # gap, and a gap holds the narration back from WordPress.
+                    raise RuntimeError(f"every take failed its check — best: {best[1]}")
                 await asyncio.to_thread(
-                    _store_wav_as_flac, project_id, f"{para['id']}-t1", best[1]
+                    _store_wav_as_flac, project_id, f"{para['id']}-t1", best[2]
                 )
             except Exception as e:
                 failures += 1

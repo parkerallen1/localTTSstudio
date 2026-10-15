@@ -8,3 +8,5 @@ mlx==0.32.2
 mlx-audio==0.5.5
 soundfile
 numpy
+# Speech check (speech_check.py, audit_speech.py): transcribes each take.
+mlx-whisper==0.4.3

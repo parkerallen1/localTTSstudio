@@ -14,7 +14,10 @@ Protocol — one JSON object per line on stdin, one reply per line on stdout:
             "temperature", "top_p", "top_k", "repetition_penalty", "lang_code"}
   reply:   {"ok": true, "sample_rate": 24000, "seconds": 12.3, "wall": 7.4}
            {"ok": false, "error": "..."}
-One model is held at a time; asking for another frees the first. The worker
+  or, to check a take: {"op": "transcribe", "audio": "/path.wav"}
+  reply:   {"ok": true, "text": "...", "wall": 0.9}
+One TTS model is held at a time; asking for another frees the first. Whisper
+(for the speech check, speech_check.py) loads on first use and stays. The worker
 exits when stdin closes, i.e. when the app that started it goes away.
 """
 import json
@@ -35,6 +38,7 @@ import mlx.core as mx         # noqa: E402
 from mlx_audio.tts.utils import load_model   # noqa: E402
 
 _model, _model_id = None, None
+WHISPER = "mlx-community/whisper-large-v3-turbo"
 
 
 def _get_model(model_id):
@@ -65,13 +69,23 @@ def _generate(req):
             "seconds": round(len(audio) / model.sample_rate, 2), "wall": round(wall, 2)}
 
 
+def _transcribe(req):
+    import mlx_whisper      # only when asked: generation-only setups needn't have it
+    t0 = time.monotonic()
+    # mlx_whisper keeps the loaded model between calls (ModelHolder).
+    r = mlx_whisper.transcribe(req["audio"], path_or_hf_repo=WHISPER, language="en",
+                               condition_on_previous_text=False)
+    return {"ok": True, "text": r["text"].strip(), "wall": round(time.monotonic() - t0, 2)}
+
+
 def main():
     for line in sys.stdin:
         line = line.strip()
         if not line:
             continue
         try:
-            reply = _generate(json.loads(line))
+            req = json.loads(line)
+            reply = _transcribe(req) if req.get("op") == "transcribe" else _generate(req)
         except Exception as e:
             traceback.print_exc()
             reply = {"ok": False, "error": f"{type(e).__name__}: {e}"}

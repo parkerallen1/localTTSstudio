@@ -103,6 +103,27 @@ class _Worker:
                 except OSError:
                     pass
 
+    def transcribe(self, wav_bytes):
+        """What a take says, by Whisper. Returns the text."""
+        with self._lock:
+            fd, path = tempfile.mkstemp(prefix="tts-check-", suffix=".wav")
+            try:
+                with os.fdopen(fd, "wb") as f:
+                    f.write(wav_bytes)
+                request = {"op": "transcribe", "audio": path}
+                try:
+                    reply = self._ask(request)
+                except _WorkerExited:
+                    reply = self._ask(request)
+                if not reply.get("ok"):
+                    raise MLXError(reply.get("error") or "transcription failed")
+                return reply["text"]
+            finally:
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+
     def stop(self):
         if self._proc and self._proc.poll() is None:
             self._proc.kill()
@@ -110,6 +131,13 @@ class _Worker:
 
 
 worker = _Worker()
+
+
+def transcribe(wav_bytes):
+    """What a take says (Whisper large-v3-turbo, in the worker). Needs
+    mlx-whisper in the MLX venv; raises MLXError when that or anything else
+    fails."""
+    return worker.transcribe(wav_bytes)
 
 
 def generate(model_id, text, language, temperature, *, max_tokens=None, ref_audio=None,
