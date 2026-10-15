@@ -249,6 +249,16 @@ raw = bq.imports[0]["raw_text"]
 check("narrated text: reference before the verse", raw.index("John 3:16 NIV") < raw.index("Verse text."), True)
 check("text hash still taken from the as-published order", bq.state["posts"]["1"]["text_hash"],
       wp_backfill._sha(post_markdown("Post 1", QUOTED, ["Next step"], [])))
+
+be = make()
+plain_e = be.pub.post_for_narration
+be.pub.post_for_narration = lambda pid: {**plain_e(pid), "post_title": "Don&#8217;t Stress the Mess"}
+be.poll()
+check("narrated title: entity decoded", be.imports[0]["raw_text"].startswith("# Don’t Stress the Mess\n"), True)
+check("project name: entity decoded", be.imports[0]["name"], "Don’t Stress the Mess")
+check("text hash keeps the title as WordPress returns it", be.state["posts"]["1"]["text_hash"],
+      wp_backfill._sha(post_markdown("Don&#8217;t Stress the Mess", LONG, ["Next step"], [])))
+
 bf.project_status = "generating"
 bf.poll()
 check("still generating: nothing published", bf.pub.published, [])

@@ -78,6 +78,7 @@ Run:  python wp_backfill.py            (loop; launchd keeps it running)
 """
 import argparse
 import hashlib
+import html
 import json
 import os
 import re
@@ -465,8 +466,13 @@ class Backfill:
 
     def _markdown(self, post, scripture_first=False):
         """The post as the text it's read from. As published (the default) for
-        word counts and text hashes; scripture_first for what's narrated."""
-        return post_markdown(post["post_title"], post["content"],
+        word counts and text hashes; scripture_first for what's narrated.
+
+        get_the_title() hands titles back texturized ("Don&#8217;t"), and the
+        voice reads the entity aloud, so what's narrated gets it decoded. The
+        published form keeps it as-is: the stored text hashes were made from it."""
+        title = html.unescape(post["post_title"]) if scripture_first else post["post_title"]
+        return post_markdown(title, post["content"],
                              self.cfg.get("stop_at_headings") or ["Next step"],
                              self.cfg.get("skip_sections") or [],
                              scripture_first=scripture_first)
@@ -569,7 +575,7 @@ class Backfill:
     def start(self, candidate):
         post_id = candidate["ID"]
         entry = self._entry(post_id)
-        entry.update({"title": candidate.get("post_title"), "status": "starting"})
+        entry.update({"title": html.unescape(candidate.get("post_title") or ""), "status": "starting"})
         try:
             post = self.pub.post_for_narration(post_id)
         except WordPressError as e:
@@ -588,7 +594,7 @@ class Backfill:
         """Import the post into the app and make it the current one."""
         entry = self._entry(post_id)
         payload = {
-            "name": post["post_title"],
+            "name": html.unescape(post["post_title"]),
             # Read with each scripture reference before its passage. `markdown`
             # (as published) still supplies the word count and text_hash below.
             "raw_text": self._markdown(post, scripture_first=True),
@@ -856,7 +862,7 @@ class Backfill:
             return self._ack(post_id, content_hash, "skipped", "too little text to narrate")
         entry = self._entry(post_id)
         prev = entry.get("status")
-        entry["title"] = post["post_title"]
+        entry["title"] = html.unescape(post["post_title"])
         entry["prev_status"] = prev if prev in _TERMINAL + (RENARRATED,) else None
         entry["upload_attempts"] = 0
         try:
