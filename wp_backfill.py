@@ -981,7 +981,7 @@ def main():
             json.dump(ids, f)
         os.replace(tmp, RENARRATE_REQUESTS)
         print(f"Requested: {', '.join(map(str, ids))}. The backfill takes them when it's next idle "
-              f"(it needs re_narration.enabled) and replaces each post's audio.")
+              f"(it needs backfill.renarrate.enabled) and replaces each post's audio.")
         return
     config = load_json(args.config, None)
     if config is None:
