@@ -449,6 +449,22 @@ bf._queue_at = 0
 bf.poll()
 check("forced: doesn't come back", bf.state["current"], None)
 
+print("\n--- --renarrate: the bad narration was taken off the post ---")
+bf = make_r()
+bf.state["posts"]["9"] = {"status": "published", "title": "Post 9"}
+plain_r = bf.pub.post_for_narration
+bf.pub.post_for_narration = lambda pid: {**plain_r(pid), "own_audio": False, "audio_id": 0}
+queue["items"], queue["acks"] = [], []
+with open(wp_backfill.RENARRATE_REQUESTS, "w") as f:
+    _json.dump([9], f)
+bf.poll()
+check("no audio now: narrated afresh", bf.state["current"], 9)
+check("no audio now: not a re-narration", bf.state["posts"]["9"].get("kind"), None)
+check("no audio now: request cleared", bf.state["force_renarrate"], [])
+bf.poll()
+check("no audio now: published with the own-audio guard", bf.pub.published[-1][:2], (9, True))
+check("no audio now: nothing acked", queue["acks"], [])
+
 bf = make_r()
 queue["items"] = [{"postId": 9, "contentHash": sha(TEXT_V2), "title": "Post 9",
                    "lastSavedAt": (clock["t"] - 120) * 1000}]

@@ -871,6 +871,13 @@ class Backfill:
             self._backoff[post_id] = _now() + RENARRATE_BACKOFF
             return
         content_hash = _sha(post.get("content") or "")
+        if item.get("force") and post.get("post_status") == "publish" and not post.get("audio_id"):
+            # Asked for by hand, but the post has no narration now (someone took
+            # a bad one off): narrate it like a backfill candidate.
+            self._unforce(post_id)
+            self._renarrate.pop(post_id, None)
+            log(f"\"{html.unescape(post['post_title'])}\" has no narration now — narrating it afresh.")
+            return self.start({"ID": post_id, "post_title": post["post_title"]})
         if post.get("post_status") != "publish" or not post.get("audio_id"):
             return self._ack(post_id, content_hash, "skipped", "not published, or no narration of its own", seen_saved_at=item.get("saved_at"))
         markdown = self._markdown(post)
@@ -925,14 +932,20 @@ class Backfill:
         save_state(self.state)
         self._ack(int(post_id), entry.get("content_hash") or "", outcome, note, seen_saved_at)
 
-    def _ack(self, post_id, content_hash, outcome, note=None, seen_saved_at=None):
-        item = self._renarrate.pop(post_id, None) or {}
-        self._backoff.pop(post_id, None)
+    def _unforce(self, post_id):
         forced = self.state.get("force_renarrate") or []
         if post_id in forced:
             forced.remove(post_id)
             save_state(self.state)
+
+    def _ack(self, post_id, content_hash, outcome, note=None, seen_saved_at=None):
+        item = self._renarrate.pop(post_id, None) or {}
+        self._backoff.pop(post_id, None)
+        self._unforce(post_id)
         if item.get("from") == "manual" and post_id not in self._queued:
+            if outcome != "renarrated":
+                log(f"Re-narration of post {post_id} (requested by hand) {outcome}"
+                    f"{': ' + note if note else ''}.", "warn")
             return                      # nothing on ds-backend's queue to ack
         try:
             r = self._queue_request("POST", json={"postId": post_id, "contentHash": content_hash,
