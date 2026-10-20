@@ -11,3 +11,4 @@ data/projects/
 data/settings.json
 *.bak
 venv-mlx/
+data/speech_audit/
