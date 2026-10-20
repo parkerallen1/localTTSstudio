@@ -81,9 +81,44 @@ def _transcribe(req):
         g = np.gcd(sr, 16000)
         audio = resample_poly(audio, 16000 // g, sr // g).astype(np.float32)
     # mlx_whisper keeps the loaded model between calls (ModelHolder).
-    r = mlx_whisper.transcribe(audio, path_or_hf_repo=WHISPER, language="en",
-                               condition_on_previous_text=False)
-    return {"ok": True, "text": r["text"].strip(), "wall": round(time.monotonic() - t0, 2)}
+    def heard(clip):
+        return mlx_whisper.transcribe(clip, path_or_hf_repo=WHISPER, language="en",
+                                      condition_on_previous_text=False)["text"].strip()
+
+    text = heard(audio)
+    # Whisper (large-v3-turbo) sometimes hears a whole take as just its last
+    # sentence — "Isaiah 43, verse 2, New Living Translation" for 15 s of
+    # passage — and no decoding option changes that. Speech runs ~3 words a
+    # second, so a transcript far slower than that is Whisper's doing, not the
+    # take's: hear it again in pieces, cut at pauses, and keep the fuller one.
+    seconds = len(audio) / 16000
+    if seconds > SHORT_HEARING_MIN_SECONDS and len(text.split()) < SHORT_HEARING_RATE * seconds:
+        pieces = " ".join(heard(audio[a:b]) for a, b in _pieces(audio)).strip()
+        if len(pieces.split()) > len(text.split()):
+            text = pieces
+    return {"ok": True, "text": text, "wall": round(time.monotonic() - t0, 2)}
+
+
+SHORT_HEARING_MIN_SECONDS = 6
+SHORT_HEARING_RATE = 2.0        # words a second
+_PIECE_SECONDS = 10
+
+
+def _pieces(audio, sr=16000):
+    """(start, end) sample spans of at most about 10 s — at least two, since a
+    clip is only cut up when hearing it whole went wrong. Each cut falls on the
+    quietest 50 ms within 30% of its even split, so no word is split in two."""
+    hop = sr // 20
+    n = len(audio) // hop
+    energy = np.sqrt(np.mean(audio[:n * hop].reshape(n, hop) ** 2, axis=1))
+    count = max(2, round(n * hop / sr / _PIECE_SECONDS))
+    step = n / count
+    cuts = []
+    for k in range(1, count):
+        lo, hi = int((k - 0.3) * step), int((k + 0.3) * step)
+        cuts.append((lo + int(np.argmin(energy[lo:hi]))) * hop + hop // 2)
+    bounds = [0] + cuts + [len(audio)]
+    return list(zip(bounds, bounds[1:]))
 
 
 def main():
