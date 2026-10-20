@@ -524,7 +524,8 @@ class Backfill:
             "limit": self.limit,
             "current": {"post_id": cur, "title": entry.get("title"),
                         "kind": entry.get("kind") or "narrate", "started_at": entry.get("started_at"),
-                        "permalink": entry.get("permalink")} if cur else None,
+                        "permalink": entry.get("permalink"),
+                        "project_id": entry.get("project_id")} if cur else None,
             "renarrate_enabled": bool(self.rcfg.get("enabled")),
             # ready_at is 0 for a `--renarrate` request: ready now, no time to show.
             "renarrate": [dict(post(pid, item.get("title")),

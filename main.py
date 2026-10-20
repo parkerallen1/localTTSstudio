@@ -1223,9 +1223,8 @@ def serve_publishes():
 PUBLISH_LOG = os.environ.get("QWEN_TTS_PUBLISH_LOG") or os.path.expanduser(
     "~/.qwen_tts_studio/wp_publish_log.jsonl")
 
-@app.get("/api/wp_publishes")
-def get_wp_publishes():
-    """The watcher's publish log, newest first. A line that doesn't parse is
+def _publish_log():
+    """The publish log's entries, oldest first. A line that doesn't parse is
     skipped rather than failing the page."""
     entries = []
     try:
@@ -1237,8 +1236,12 @@ def get_wp_publishes():
                     continue
     except FileNotFoundError:
         pass
-    entries.reverse()
-    return {"entries": entries}
+    return entries
+
+@app.get("/api/wp_publishes")
+def get_wp_publishes():
+    """The watcher's publish log, newest first."""
+    return {"entries": _publish_log()[::-1]}
 
 # Written by wp_backfill.py: its queue, and a "summary" of what's left that
 # it refreshes on every poll. Same directory as the publish log, for the same
@@ -1259,7 +1262,11 @@ def get_backfill_status():
         summary = None
     if not summary:
         return {"available": False}
-    return {"available": True, **summary, "as_of": as_of.isoformat(timespec="seconds")}
+    # Every post that has narration from here — the Doc watcher's and the
+    # backfill's; a re-narration doesn't count twice.
+    narrated = len({e["post_id"] for e in _publish_log() if e.get("post_id")})
+    return {"available": True, **summary, "narrated": narrated,
+            "as_of": as_of.isoformat(timespec="seconds")}
 
 @app.get("/api/profiles")
 def get_profiles():
@@ -1718,6 +1725,17 @@ def get_project(project_id: str):
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
     return project
+
+@app.get("/api/projects/{project_id}/progress")
+def get_project_progress(project_id: str):
+    """How far an import has got, for the Queue panel's live progress — the
+    whole project is too much to poll every few seconds."""
+    project = _load_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    paragraphs = project.get("paragraphs", [])
+    return {"done": sum(1 for p in paragraphs if p.get("hasAudio")), "total": len(paragraphs),
+            "status": project.get("import_status")}
 
 def _chapter_title(text):
     """First sentence of a paragraph (everything up to the first period) —
