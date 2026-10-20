@@ -190,10 +190,11 @@
                     s.current.started_at ? ` (since ${time(s.current.started_at)})` : ''));
                 if (project) detail.push(progress);
             } else {
-                // The backfill restarts the app between posts, so this lasts a
-                // minute or two (longer while a Google Doc goes first).
+                // Between posts the backfill publishes the last one and reads
+                // the next from WordPress (~30 s per wp-cli call), so this lasts
+                // a minute or two — longer while a Google Doc goes first.
                 detail.push(el('p', { className: 'q-line' },
-                    posts + edits ? 'Starting the next post (the app restarts between posts)…' : 'All caught up.'));
+                    posts + edits ? 'Getting the next post from WordPress…' : 'All caught up.'));
             }
             if (edits) {
                 detail.push(el('p', { className: 'q-line' }, 'Waiting to be re-narrated:'),
