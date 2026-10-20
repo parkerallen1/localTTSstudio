@@ -548,6 +548,10 @@ class Backfill:
 
     def poll(self):
         try:
+            if self.rcfg.get("enabled"):
+                # Every poll, not just between posts, so the Queue panel lists
+                # hand requests while a post narrates (and after a restart).
+                self.take_requests()
             self._step()
         finally:
             self._save_summary()
