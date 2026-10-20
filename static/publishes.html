@@ -88,6 +88,13 @@
             const d = new Date(iso);
             return isNaN(d) ? '' : d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
         };
+        // A queued post: its title, linked to the post when the link is known.
+        const postLink = (p) => {
+            const title = p.title || `Post ${p.post_id}`;
+            return p.permalink
+                ? el('a', { href: p.permalink, target: '_blank', rel: 'noopener', textContent: title })
+                : title;
+        };
         const stat = (n, label) => el('div', { className: 'q-stat' }, el('b', { textContent: n }), el('span', { textContent: label }));
 
         async function refresh() {
@@ -113,24 +120,24 @@
             const detail = [];
             if (s.current) {
                 const verb = s.current.kind === 'renarrate' ? 'Re-narrating' : 'Narrating';
-                const title = s.current.permalink
-                    ? el('a', { href: s.current.permalink, target: '_blank', rel: 'noopener', textContent: s.current.title })
-                    : s.current.title;
-                detail.push(el('p', { className: 'q-line' }, `${verb} now: `, title,
+                detail.push(el('p', { className: 'q-line' }, `${verb} now: `, postLink(s.current),
                     s.current.started_at ? ` (since ${time(s.current.started_at)})` : ''));
             } else {
-                detail.push(el('p', { className: 'q-line' }, posts + edits ? 'Between posts.' : 'All caught up.'));
+                // The backfill restarts the app between posts, so this lasts a
+                // minute or two (longer while a Google Doc goes first).
+                detail.push(el('p', { className: 'q-line' },
+                    posts + edits ? 'Starting the next post (the app restarts between posts)…' : 'All caught up.'));
             }
             if (edits) {
                 detail.push(el('p', { className: 'q-line' }, 'Waiting to be re-narrated:'),
                     el('ul', { className: 'q-list' }, ...s.renarrate.map(r =>
-                        el('li', {}, r.title || `Post ${r.post_id}`,
-                            el('span', { className: 'q-muted', textContent: `  · from ${time(r.ready_at)}` })))));
+                        el('li', {}, postLink(r),
+                            r.ready_at ? el('span', { className: 'q-muted', textContent: `  · from ${time(r.ready_at)}` }) : ''))));
             }
             if ((s.upload_pending || []).length) {
                 detail.push(el('p', { className: 'q-line' }, 'Narrated, upload being retried:'),
                     el('ul', { className: 'q-list' }, ...s.upload_pending.map(u =>
-                        el('li', { textContent: u.title || `Post ${u.post_id}` }))));
+                        el('li', {}, postLink(u)))));
             }
             if (!s.renarrate_enabled) {
                 detail.push(el('p', { className: 'q-muted', textContent: 'Re-narrating edited posts is off.' }));

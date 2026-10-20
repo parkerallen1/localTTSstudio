@@ -511,6 +511,13 @@ class Backfill:
         cur = self.state.get("current")
         entry = posts.get(str(cur), {}) if cur else {}
         when = lambda t: datetime.fromtimestamp(t).astimezone().isoformat(timespec="seconds")
+
+        def post(pid, title=None):
+            # A `--renarrate` request carries no title; the post's entry from
+            # its first narration has the title and the link.
+            e = posts.get(str(pid), {})
+            return {"post_id": int(pid), "title": html.unescape(title or e.get("title") or "") or None,
+                    "permalink": e.get("permalink")}
         return {
             "remaining": remaining,
             "published": self.published_count(),
@@ -519,11 +526,12 @@ class Backfill:
                         "kind": entry.get("kind") or "narrate", "started_at": entry.get("started_at"),
                         "permalink": entry.get("permalink")} if cur else None,
             "renarrate_enabled": bool(self.rcfg.get("enabled")),
-            "renarrate": [{"post_id": pid, "title": item.get("title"), "ready_at": when(item["ready_at"])}
+            # ready_at is 0 for a `--renarrate` request: ready now, no time to show.
+            "renarrate": [dict(post(pid, item.get("title")),
+                               ready_at=when(item["ready_at"]) if item["ready_at"] else None)
                           for pid, item in sorted(self._renarrate.items(), key=lambda kv: kv[1]["ready_at"])
                           if str(pid) != str(cur)],
-            "upload_pending": [{"post_id": int(pid), "title": e.get("title")}
-                               for pid, e in posts.items() if e.get("status") == UPLOAD_PENDING],
+            "upload_pending": [post(pid) for pid, e in posts.items() if e.get("status") == UPLOAD_PENDING],
         }
 
     def _save_summary(self):
