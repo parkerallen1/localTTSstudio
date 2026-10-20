@@ -47,11 +47,11 @@ line per live publish, including what each field held before (for undoing).
 
 **Mac mini** (`ssh mini`, user `peterpgrew`) runs everything.
 
-- **The live checkout is `~/programming/qwen-tts-studio`.** There is a *second*
-  clone at `~/programming/digital_team/qwen_tts/qwen-tts-studio` that launchd
-  does NOT use. Pull the first one. Deploy:
+- **The live checkout is `~/programming/localTTSstudio`** (the same path on the
+  MacBook; it was `~/programming/qwen-tts-studio` until 2026-10-20, and the
+  launchd plists were repointed then). Deploy:
   ```bash
-  ssh mini 'cd ~/programming/qwen-tts-studio && git pull --ff-only && launchctl kickstart -k gui/$(id -u)/com.localtts.docwatcher'
+  ssh mini 'cd ~/programming/localTTSstudio && git pull --ff-only && launchctl kickstart -k gui/$(id -u)/com.localtts.docwatcher'
   ```
 - Config: `~/.qwen_tts_studio/doc_watcher.json` (a dated `.bak-` backup sits
   beside it). Log: `/tmp/localtts-docwatcher.log`.

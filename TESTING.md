@@ -11,7 +11,7 @@ Double-click `/Applications/TTS Studio.app` (or from Dock).
 
 ### From source (if the .app has issues)
 ```bash
-cd /Users/parkerallen/programming/digital_team/qwen_tts/qwen-tts-studio
+cd ~/programming/localTTSstudio
 venv/bin/python3 app_launcher.py
 ```
 
@@ -109,7 +109,7 @@ curl -X POST http://127.0.0.1:8001/api/generate \
 
 If source changes are needed:
 ```bash
-cd /Users/parkerallen/programming/digital_team/qwen_tts/qwen-tts-studio
+cd ~/programming/localTTSstudio
 
 # Kill any running instance
 pkill -f LocalTTSStudio; lsof -ti tcp:8001 | xargs kill 2>/dev/null
