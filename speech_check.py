@@ -24,6 +24,8 @@ _ORDINAL = {"1": "first", "2": "second", "3": "third"}
 # Books read with an ordinal: "2 Corinthians" is "Second Corinthians".
 _BOOKS = r"(?:samuel|kings|chronicles|corinthians|thessalonians|timothy|peter|john)"
 _ENTITY_RE = re.compile(r"&#?\w+;")
+# An outline marker opening a paragraph: "A. Valuing God's love", "2) In what…".
+_MARKER_RE = re.compile(r"^\s*(?:[A-Za-z]|\d{1,2})[.)]\s+(?=\S)")
 
 
 def _spell(n):
@@ -63,6 +65,15 @@ def compare(expected_text, heard_text):
     (a word error rate, roughly). `longest_extra` is the longest run of words
     heard that aren't in the text — babble shows up there first."""
     exp, got = words(expected_text), words(heard_text)
+    total = len(exp)                    # with the marker: MIN_WORDS still applies to the line
+    marker = _MARKER_RE.match(expected_text or "")
+    if marker:
+        # Whisper drops a leading "A." / "2)" or hears it as "uh", "see", "to",
+        # "for" — on a four-word heading that alone reads as a 50% error. Leave
+        # the marker out, and the one short word it was heard as, if any.
+        exp = exp[len(words(marker.group())):]
+        if exp and len(got) > 1 and got[0] != exp[0] and len(got[0]) <= 4 and got[1] == exp[0]:
+            got = got[1:]
     n = max(1, len(exp))
     sm = difflib.SequenceMatcher(None, exp, got, autojunk=False)
     matched = sum(b.size for b in sm.get_matching_blocks())
@@ -81,7 +92,7 @@ def compare(expected_text, heard_text):
         readings = {_spell(n), _spell(n // 1000) + " thousand " + _spell(n % 1000) if n >= 1000 else _spell(n)}
         if num in (heard_text or "") or any(f" {r} " in heard_joined for r in readings):
             entity_read = True
-    return {"words": len(exp), "heard_words": len(got), "missing": round(missing, 3),
+    return {"words": total, "heard_words": len(got), "missing": round(missing, 3),
             "extra": round(extra, 3), "error": round(missing + extra, 3),
             "longest_extra": longest_extra, "entity_read": entity_read}
 
