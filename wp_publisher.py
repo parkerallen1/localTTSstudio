@@ -383,6 +383,8 @@ if ( ! $post ) {
         'text_hash_meta'    => (string) get_post_meta( $post->ID, '_tts_text_hash', true ),
     );
     $out['audio_id'] = $out['own_audio'] ? $a : 0;
+    // The app project the narration was made from (publish()'s `source`).
+    $out['audio_source'] = $out['own_audio'] ? (string) get_post_meta( $a, '_tts_source', true ) : '';
 }
 echo "<<<TTSJSON>>>" . wp_json_encode( $out ) . "<<<TTSEND>>>\n";
 """
@@ -712,8 +714,8 @@ class WordPressPublisher:
         return result["posts"]
 
     def post_for_narration(self, post_id):
-        """One post's title, status, permalink, raw block content, and whether
-        it has narration of its own."""
+        """One post's title, status, permalink, raw block content, whether
+        it has narration of its own, and the app project that made it."""
         return self._eval_json(_POST_PHP, {"post_id": int(post_id),
                                            "audio_meta": self._audio_meta()})
 

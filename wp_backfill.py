@@ -60,7 +60,10 @@ the back catalogue — and swaps the new audio in (the old file stays in the
 media library). "Changed" is decided here, exactly: the post is converted to
 the text it's read from and compared with the hash stored when it was last
 narrated (_tts_text_hash), so an edit that only touched images or formatting
-just updates the stored hashes.
+just updates the stored hashes. Only the edited paragraphs are generated:
+the rest keep their audio from the narration being replaced (the project
+its attachment names), unless the voice settings changed since, or most of
+the post did. A `--renarrate` by hand always narrates the whole post.
     "renarrate": {
       "enabled": true,
       "queue_url": "https://us-west2-dspirituality-461ee.cloudfunctions.net/ttsQueue",
@@ -615,6 +618,8 @@ class Backfill:
             # Read with each scripture reference before its passage. `markdown`
             # (as published) still supplies the word count and text_hash below.
             "raw_text": self._markdown(post, scripture_first=True),
+            # A re-narration keeps the audio of paragraphs the edit didn't touch.
+            "reuse_from": extra.pop("reuse_from", None),
             "source": {"kind": "wordpress_post", "post_id": post_id,
                        "url": post.get("permalink")},
         }
@@ -639,8 +644,10 @@ class Backfill:
         self.state["current"] = post_id
         save_state(self.state)
         verb = "Re-narrating" if extra.get("kind") == "renarrate" else "Narrating"
+        reused = result.get("reused") or 0
         log(f"{verb} \"{html.unescape(post['post_title'])}\" (post {post_id}, {entry['words']} words, "
-            f"{result.get('para_count')} paragraphs).", "ok")
+            f"{result.get('para_count')} paragraphs"
+            f"{f', {reused} unchanged and kept' if reused else ''}).", "ok")
 
     def check_current(self):
         post_id = self.state["current"]
@@ -914,8 +921,10 @@ class Backfill:
         entry["prev_status"] = prev if prev in _TERMINAL + (RENARRATED,) else None
         entry["upload_attempts"] = 0
         try:
+            # Not by hand: --renarrate is for replacing a bad narration whole.
             self._import(post_id, post, markdown, kind="renarrate", expect_audio=post["audio_id"],
-                         queue_saved_at=item.get("saved_at"))
+                         queue_saved_at=item.get("saved_at"),
+                         reuse_from=None if item.get("force") else post.get("audio_source") or None)
         except requests.RequestException as e:
             entry.pop("prev_status", None)
             log(f"Couldn't import \"{title}\" to re-narrate it: {e} — trying again later.", "warn")

@@ -1652,9 +1652,11 @@ async def import_project(request: Request):
     """Create a project from raw text and (optionally) generate all audio.
 
     Body: {"raw_text": str, "name"?: str, "settings"?: {...}, "generate"?: bool,
-           "source"?: {...}}. Settings not supplied fall back to the
-    "import_defaults" object in settings.json, then to CustomVoice defaults.
-    "source" is stored verbatim (the Docs watcher records doc id / revision)."""
+           "source"?: {...}, "reuse_from"?: project_id}. Settings not supplied
+    fall back to the "import_defaults" object in settings.json, then to
+    CustomVoice defaults. "source" is stored verbatim (the Docs watcher
+    records doc id / revision). "reuse_from" names an earlier narration of the
+    same text whose unchanged paragraphs keep their audio (_reuse_unchanged_audio)."""
     try:
         data = await request.json()
     except Exception:
@@ -1705,8 +1707,12 @@ async def import_project(request: Request):
         "import_status": "pending",
         "source": data.get("source"),
     }
+    reused = 0
+    if data.get("reuse_from"):
+        reused = _reuse_unchanged_audio(str(data["reuse_from"]), project_id, project)
     _save_project(project_id, project)
-    emit_log(f"Imported project \"{name}\" — {len(parsed)} paragraph(s).", "info")
+    emit_log(f"Imported project \"{name}\" — {len(parsed)} paragraph(s)"
+             + (f", {reused} unchanged from the last narration." if reused else "."), "info")
 
     generate = data.get("generate", True)
     if generate:
@@ -1717,7 +1723,63 @@ async def import_project(request: Request):
     else:
         _set_import_status(project_id, "not_requested")
 
-    return {"id": project_id, "name": name, "para_count": len(parsed), "generating": bool(generate)}
+    return {"id": project_id, "name": name, "para_count": len(parsed), "generating": bool(generate),
+            "reused": reused}
+
+# Re-narrating an edited post: paragraphs whose text didn't change keep their
+# audio from the previous narration, so only the edited ones are generated.
+# Each paragraph is generated on its own anyway, so a narration spliced from
+# old and new takes sounds the same as a fresh one — as long as the voice is
+# the same, hence these must all match.
+_REUSE_VOICE_KEYS = ("modelType", "modelSize", "speaker", "instruct",
+                     "voiceDesignPrompt", "savedVoiceId", "temperature")
+# Below this share of unchanged paragraphs it's a rewrite: narrate it afresh.
+REUSE_MIN_SHARE = 0.5
+
+def _reuse_unchanged_audio(old_id: str, project_id: str, project: dict) -> int:
+    """Copy the old project's active takes into `project` for paragraphs with
+    the same text, marking them generated. Returns how many were reused; 0
+    (narrate everything) if the old project is gone, used another voice, or
+    too little of it survived the edit."""
+    try:
+        old = _load_project(old_id)
+    except HTTPException:
+        old = None
+    if not old:
+        emit_log(f"Reuse: previous project {old_id} not found — narrating everything.", "warn")
+        return 0
+    old_s, new_s = old.get("settings", {}), project["settings"]
+    changed = [k for k in _REUSE_VOICE_KEYS if old_s.get(k) != new_s.get(k)]
+    if changed:
+        emit_log(f"Reuse: the voice settings changed ({', '.join(changed)}) — narrating everything.", "info")
+        return 0
+
+    norm = lambda t: " ".join(str(t or "").split())
+    old_dir = os.path.join(_project_dir(old_id), "audio")
+    takes = {}  # normalized text -> audio file of its active take
+    for p in old.get("paragraphs", []):
+        if not p.get("hasAudio"):
+            continue
+        take = p.get("activeTake")
+        file_id = _safe_para_id(p["id"] if not take else f"{p['id']}-t{take}")
+        for ext in ("flac", "wav"):
+            path = os.path.join(old_dir, f"{file_id}.{ext}")
+            if os.path.exists(path):
+                takes.setdefault(norm(p["text"]), path)
+                break
+
+    paragraphs = project["paragraphs"]
+    matches = [(p, takes[norm(p["text"])]) for p in paragraphs if norm(p["text"]) in takes]
+    if len(matches) < REUSE_MIN_SHARE * len(paragraphs):
+        emit_log(f"Reuse: only {len(matches)} of {len(paragraphs)} paragraphs unchanged — "
+                 f"narrating everything.", "info")
+        return 0
+    new_dir = os.path.join(_project_dir(project_id), "audio")
+    os.makedirs(new_dir, exist_ok=True)
+    for p, path in matches:
+        shutil.copyfile(path, os.path.join(new_dir, f"{p['id']}-t1{os.path.splitext(path)[1]}"))
+        p.update({"hasAudio": True, "takes": [1], "activeTake": 1})
+    return len(matches)
 
 @app.get("/api/projects/{project_id}")
 def get_project(project_id: str):
