@@ -530,6 +530,17 @@ narration stays. An hourly sweep stamps baselines on narrations without one
 (older ones, the Doc watcher's, uploads by hand — taken to match the post as
 it is) and queues any post whose content drifted without a queue request.
 
+Only the edited paragraphs are generated. The post's audio attachment names
+the app project it was made from (`_tts_source`); paragraphs whose text is
+unchanged keep that project's audio. It narrates the whole post instead when
+that project is gone (or the narration was recorded, or uploaded by hand), the
+voice settings changed since, or under half the paragraphs are unchanged.
+
+By hand: `python wp_backfill.py --renarrate ID` narrates a post again in full
+even if its text hasn't changed (a bad take); add `--if-changed` to treat it
+like a save in the editor instead — skipped if the text is unchanged, and only
+the edited paragraphs generated.
+
 ```json
 "backfill": {
   ...

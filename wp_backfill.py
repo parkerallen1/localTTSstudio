@@ -63,7 +63,8 @@ narrated (_tts_text_hash), so an edit that only touched images or formatting
 just updates the stored hashes. Only the edited paragraphs are generated:
 the rest keep their audio from the narration being replaced (the project
 its attachment names), unless the voice settings changed since, or most of
-the post did. A `--renarrate` by hand always narrates the whole post.
+the post did. A `--renarrate` by hand narrates the whole post, even unchanged;
+with `--if-changed` it's treated like a save in the editor instead.
     "renarrate": {
       "enabled": true,
       "queue_url": "https://us-west2-dspirituality-461ee.cloudfunctions.net/ttsQueue",
@@ -78,6 +79,7 @@ content no longer matches its narration but whose queue request was lost.
 Run:  python wp_backfill.py            (loop; launchd keeps it running)
       python wp_backfill.py --status   (what's done, skipped, failed)
       python wp_backfill.py --text ID  (print the text a post WOULD be read as)
+      python wp_backfill.py --renarrate ID [--renarrate ID ...] [--if-changed]
 """
 import argparse
 import hashlib
@@ -807,10 +809,15 @@ class Backfill:
         except FileNotFoundError:
             ids = []
         forced = self.state.setdefault("force_renarrate", [])
-        for pid in ids:
-            if int(pid) not in forced:
-                forced.append(int(pid))
-                log(f"Re-narration of post {pid} requested by hand.")
+        if_changed = self.state.setdefault("renarrate_if_changed", [])
+        for req in ids:
+            # An id, or {"id", "if_changed": true} from `--renarrate ... --if-changed`.
+            pid = int(req["id"] if isinstance(req, dict) else req)
+            wanted = if_changed if isinstance(req, dict) and req.get("if_changed") else forced
+            if pid not in wanted:
+                wanted.append(pid)
+                log(f"Re-narration of post {pid} requested by hand"
+                    f"{' (if its text changed)' if wanted is if_changed else ''}.")
         if ids:
             save_state(self.state)
         for pid in forced:
@@ -818,6 +825,11 @@ class Backfill:
             # usually a bad take, not an edit.
             self._renarrate.setdefault(pid, {"content_hash": None, "title": None, "from": "manual",
                                              "force": True, "ready_at": 0})
+        for pid in if_changed:
+            # Like a queued save: unchanged text keeps its narration, and only
+            # the edited paragraphs are generated.
+            self._renarrate.setdefault(pid, {"content_hash": None, "title": None, "from": "manual",
+                                             "ready_at": 0})
 
     def due_renarration(self):
         if _now() - self._queue_at > QUEUE_POLL:
@@ -955,9 +967,14 @@ class Backfill:
         self._ack(int(post_id), entry.get("content_hash") or "", outcome, note, seen_saved_at)
 
     def _unforce(self, post_id):
-        forced = self.state.get("force_renarrate") or []
-        if post_id in forced:
-            forced.remove(post_id)
+        """Drop a hand request for the post, once its re-narration ends."""
+        changed = False
+        for key in ("force_renarrate", "renarrate_if_changed"):
+            ids = self.state.get(key) or []
+            if post_id in ids:
+                ids.remove(post_id)
+                changed = True
+        if changed:
             save_state(self.state)
 
     def _ack(self, post_id, content_hash, outcome, note=None, seen_saved_at=None):
@@ -1040,18 +1057,22 @@ def main():
     ap.add_argument("--renarrate", type=int, metavar="POST_ID", action="append",
                     help="narrate a post again even if its text hasn't changed (e.g. a bad "
                          "take); the running backfill picks it up and replaces the audio")
+    ap.add_argument("--if-changed", action="store_true",
+                    help="with --renarrate: only if the post's text changed since it was "
+                         "narrated, and only the edited paragraphs (like a save in the editor)")
     args = ap.parse_args()
 
     if args.status:
         return print_status()
     if args.renarrate:
         ids = load_json(RENARRATE_REQUESTS, []) or []
-        ids += [pid for pid in args.renarrate if pid not in ids]
+        new = [{"id": pid, "if_changed": True} if args.if_changed else pid for pid in args.renarrate]
+        ids += [req for req in new if req not in ids]
         tmp = RENARRATE_REQUESTS + ".tmp"
         with open(tmp, "w") as f:
             json.dump(ids, f)
         os.replace(tmp, RENARRATE_REQUESTS)
-        print(f"Requested: {', '.join(map(str, ids))}. The backfill takes them when it's next idle "
+        print(f"Requested: {', '.join(str(r['id'] if isinstance(r, dict) else r) for r in ids)}. The backfill takes them when it's next idle "
               f"(it needs backfill.renarrate.enabled) and replaces each post's audio.")
         return
     config = load_json(args.config, None)
