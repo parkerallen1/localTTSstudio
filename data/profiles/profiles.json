@@ -16,5 +16,11 @@
         "name": "Jennifer v3",
         "ref_text": "Settle in. Take a deep breath. Turn off notifications on your phone if you can. Ask God to give you a new perspective and help",
         "audio_path": "data/profiles/d3b61611-2b40-48d4-b0d3-d4a4ca439aec_clone this v3.wav"
+    },
+    {
+        "id": "6b46ad07-b469-476e-b67b-75a2cd4e5a84",
+        "name": "Dupin Briefing (Narrator)",
+        "ref_text": "Good morning, Parker. It's Monday, the second of November. Fifty-four degrees and clearing by noon. You have two things on the calendar today, and one of them involves Hunter and dinner, so do try to eat something before then. Shall we begin now?",
+        "audio_path": "data/profiles/6b46ad07-b469-476e-b67b-75a2cd4e5a84_2-narrator.wav"
     }
 ]
