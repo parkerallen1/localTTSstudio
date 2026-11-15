@@ -37,6 +37,7 @@ fake = os.path.join(d, "fake_worker.py")
 open(fake, "w").write(FAKE)
 state = os.path.join(d, "crashed")
 mlx_engine.MLX_PYTHON = sys.executable
+mlx_engine.IDLE_UNLOAD_SECS = 0.4     # the reaper thread reads it as it starts
 mlx_engine.WORKER = fake
 real_popen = mlx_engine.subprocess.Popen
 mlx_engine.subprocess.Popen = lambda argv, **kw: real_popen(argv + [state], **kw)
@@ -61,6 +62,16 @@ try:
 except mlx_engine.MLXError as e:
     got = str(e)
 check("a worker error is reported, not retried", got, "ValueError: boom")
+
+import time
+mlx_engine.worker.stop()
+mlx_engine.generate("m", "idle", "English", 0.85)
+proc = mlx_engine.worker._proc
+check("worker alive right after a job", proc.poll() is None, True)
+time.sleep(2)
+check("idle worker is unloaded", mlx_engine.worker._proc is None and proc.poll() is not None, True)
+wav, _ = mlx_engine.generate("m", "again", "English", 0.85)
+check("next request respawns it", wav, b"RIFF-fake-again")
 
 mlx_engine.MLX_PYTHON = ""
 check("off when QWEN_TTS_MLX_PYTHON isn't set", mlx_engine.model_for("1.7B", "Base"), None)

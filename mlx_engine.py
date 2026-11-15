@@ -18,6 +18,7 @@ import select
 import subprocess
 import tempfile
 import threading
+import time
 
 MLX_PYTHON = (os.environ.get("QWEN_TTS_MLX_PYTHON") or "").strip()
 WORKER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mlx_worker.py")
@@ -34,6 +35,10 @@ MLX_MODELS = {
 
 # A paragraph is at most a few minutes of audio; this only bounds a hang.
 REPLY_TIMEOUT = 1800
+
+# The worker holds ~5.6 GB of models; unload it after this many idle seconds
+# (0 disables). The next request respawns it through _ensure().
+IDLE_UNLOAD_SECS = float(os.environ.get("QWEN_TTS_MLX_IDLE_SECS", "600"))
 
 
 class MLXError(RuntimeError):
@@ -57,6 +62,23 @@ class _Worker:
     def __init__(self):
         self._proc = None
         self._lock = threading.Lock()
+        self._last_used = time.monotonic()
+        self._reaper = None
+
+    def _start_reaper(self):
+        if IDLE_UNLOAD_SECS <= 0 or (self._reaper and self._reaper.is_alive()):
+            return
+        self._reaper = threading.Thread(target=self._reap_loop, daemon=True)
+        self._reaper.start()
+
+    def _reap_loop(self):
+        while True:
+            time.sleep(max(0.05, min(30.0, IDLE_UNLOAD_SECS / 4)))
+            # Same lock as generate/transcribe: never kills mid-job.
+            with self._lock:
+                if (self._proc and self._proc.poll() is None
+                        and time.monotonic() - self._last_used >= IDLE_UNLOAD_SECS):
+                    self.stop(graceful=True)
 
     def _ensure(self):
         if self._proc and self._proc.poll() is None:
@@ -65,6 +87,7 @@ class _Worker:
         self._proc = subprocess.Popen(
             [MLX_PYTHON, WORKER], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             text=True, bufsize=1)
+        self._start_reaper()
 
     def _ask(self, request):
         self._ensure()
@@ -75,6 +98,7 @@ class _Worker:
             self.stop()
             raise MLXError(f"no reply from the MLX worker within {REPLY_TIMEOUT}s")
         line = self._proc.stdout.readline()
+        self._last_used = time.monotonic()
         if not line:
             code = self._proc.poll()
             self._proc = None
@@ -124,9 +148,17 @@ class _Worker:
                 except OSError:
                     pass
 
-    def stop(self):
+    def stop(self, graceful=False):
         if self._proc and self._proc.poll() is None:
-            self._proc.kill()
+            if graceful:
+                try:
+                    self._proc.stdin.close()      # EOF: the worker exits itself
+                    self._proc.wait(timeout=5)
+                except (OSError, subprocess.TimeoutExpired):
+                    self._proc.kill()
+                    self._proc.wait()
+            else:
+                self._proc.kill()
         self._proc = None
 
 
