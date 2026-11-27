@@ -154,6 +154,26 @@ _BLOCK_RE = re.compile(
     r"<!--\s*wp:(" + _SKIP_BLOCKS + r")(?:\s[^>]*?)?-->.*?<!--\s*/wp:\1\s*-->", re.S)
 # Anything a leftover [shortcode] would add is noise to a listener.
 _SHORTCODE_RE = re.compile(r"\[/?[a-z_][a-z0-9_-]*(?:\s[^\]]*)?\]", re.I)
+# The narrated form is stricter about what counts as a shortcode: only a
+# known builder prefix, or a name with an underscore or "=" attributes. The
+# loose one above also ate Amplified Bible insertions ("[the one who
+# believes]"): 540 of them in 127 narrated posts (2026-11-26 audit).
+_SPOKEN_SHORTCODE_RE = re.compile(
+    r"\[/?(?:(?:fusion|avada|awb|ds|sticky|gravityform|wpcode|icon|caption|audio|video|embed|"
+    r"playlist|gallery|rank_math|toc)\b[^\]]*"           # known builders/plugins
+    r"|[a-z][a-z0-9-]*_[a-z0-9_-]*(?:\s[^\]]*)?"              # name_with_underscore
+    r"|[a-z][a-z0-9_-]*\s+[a-z_-]+\s*=[^\]]*)\]", re.I)       # name attr=...
+# QQT section titles sit in a cover block (image background + centred h2).
+# The narrated form keeps the cover's headings and drops the rest of it.
+_COVER_RE = re.compile(r"<!--\s*wp:cover\b(?:\s[^>]*?)?-->(.*?)<!--\s*/wp:cover\s*-->", re.S)
+_HEADING_RE = re.compile(r"<h([1-6])\b[^>]*>.*?</h\1>", re.S)
+
+
+def cover_headings(content):
+    """Each cover block replaced by just the headings inside it."""
+    def keep(match):
+        return "".join(h.group(0) for h in _HEADING_RE.finditer(match.group(1)))
+    return _COVER_RE.sub(keep, content or "")
 
 # A Bible reference on its own: "Psalm 63:1-3 NIV", "Matthew 7:3–5 AMP",
 # "Genesis 32:24,28 NIV", "— Luke 11:34 Voice", "Isaiah 38:17 - The Voice",
@@ -314,16 +334,21 @@ def post_markdown(title, content, stop_at_headings=(), skip_sections=(), scriptu
     (the parser's title line), then one line per paragraph, heading (h2 = a
     chapter), list item or quote citation.
 
-    scripture_first: read each quote's Bible reference before the passage
-    (scripture_reference_first). Narration uses it; the text hashes don't, so
-    they keep matching the narrations made before it existed."""
+    scripture_first: the narrated form. Reads each quote's Bible reference
+    before the passage (scripture_reference_first), reads the headings inside
+    cover blocks (QQT section titles; cover_headings) and keeps bracketed
+    words that aren't shortcodes (Amplified insertions). The text hashes use
+    the published form, so they keep matching the narrations made before any
+    of this existed and nothing is re-narrated just because the parser grew."""
     html = scripture_reference_first(content) if scripture_first else (content or "")
+    if scripture_first:
+        html = cover_headings(html)
     while True:
         stripped = _BLOCK_RE.sub("", html)
         if stripped == html:
             break
         html = stripped
-    html = _SHORTCODE_RE.sub("", html)
+    html = (_SPOKEN_SHORTCODE_RE if scripture_first else _SHORTCODE_RE).sub("", html)
     parser = _Narration(stop_at_headings, skip_sections)
     parser.feed(html)
     parser.close()

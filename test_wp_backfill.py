@@ -122,6 +122,25 @@ check("leftover shortcodes dropped",
 check("no stop heading reads to the end",
       post_markdown("T", "<h2>Next week</h2><p>More.</p>", ["Next step"]), "# T\n\n## Next week\n\nMore.")
 
+print("\n--- narrated form: cover headings and Amplified brackets ---")
+COVER = ('<!-- wp:cover {"url":"x.jpg"} --><div class="wp-block-cover"><span class="bg"></span>'
+         '<div class="inner"><!-- wp:image --><figure><img src="i.svg" alt="Icon"/></figure><!-- /wp:image -->'
+         '<!-- wp:heading {"textAlign":"center"} --><h2 class="post-cover-heading">Repentance is change, not perfection.</h2>'
+         '<!-- /wp:heading --></div></div><!-- /wp:cover --><h3>Read:</h3><p>Body.</p>')
+check("cover heading read when narrated",
+      post_markdown("T", COVER, [], scripture_first=True),
+      "# T\n\n## Repentance is change, not perfection.\n\n### Read:\n\nBody.")
+check("cover heading left out of the published form (hashes unchanged)",
+      post_markdown("T", COVER, []), "# T\n\n### Read:\n\nBody.")
+AMP = ('<p>for [My] power is being perfected [and is completed and shows itself most effectively] '
+       'in [your] weakness [29] [fusion_text]x[/fusion_text] [ds_card id="4"] [gravityform id=2]</p>')
+check("Amplified brackets kept when narrated, shortcodes still dropped",
+      post_markdown("T", AMP, [], scripture_first=True),
+      "# T\n\nfor [My] power is being perfected [and is completed and shows itself most effectively] "
+      "in [your] weakness [29] x")
+check("published form unchanged for brackets",
+      post_markdown("T", AMP, []), "# T\n\nfor power is being perfected in weakness [29] x")
+
 print("\n--- scripture reference read first ---")
 first = post_markdown("Strong in Body", POST, ["Next step"], scripture_first=True).split("\n\n")
 check("reference starts the passage", "Matthew 26:41 AMPC The spirit indeed is willing, but the flesh is weak." in first, True)
